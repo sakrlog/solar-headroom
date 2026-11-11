@@ -1,6 +1,7 @@
 """engine.models and engine.daily on synthetic sites (no real data)."""
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import numpy as np
@@ -9,7 +10,7 @@ from engine import daily as D
 from engine import features as F
 from engine import models as M
 from engine import solar as S
-from engine.gbm import GBMParams
+from engine.gbm import GBM, GBMParams
 
 FAST = GBMParams(rounds=60, learning_rate=0.1, min_leaf=10)
 SITE = S.Site(45.0, 7.0, 300.0)
@@ -23,7 +24,7 @@ def ts(*args) -> float:
 # ---------------------------------------------------------------- models
 def test_targets_and_config():
     cfg = M.ModelConfig.for_kwp(8.0)
-    assert cfg.min_p_cs_w == 320 and cfg.p_ref_w == 1000
+    assert cfg.min_p_cs_w == 320 and cfg.p_ref_w == 1000 and cfg.high_sun_w == 4000
     t = {"ts": np.arange(5.0), "pv_w": np.array([500, 900, 100, np.nan, 2000.0]),
          "p_cs": np.array([1000, 1000, 200, 1000, 2000.0]),
          "regime": np.array(["mpp", "limited", "mpp", "mpp", "night"], dtype=object)}
@@ -66,6 +67,75 @@ def test_fit_predict_and_metrics():
     r = M.metrics(k * p_cs, pv, cens, np.where(cens, "", "voltage"))
     assert r["all_full_output_n"] == (~cens).sum() == r["voltage_rule_n"]
     assert r["pct_below_known_floor"] < 5
+
+
+# ---------------------------------------------------------------- leak guard
+GUARD_FEATURES = ["sun_el", "p_cs", "fc_kgti"]          # clock, clock, weather
+
+
+def throttled_hours(n=4000, seed=3, selected=True):
+    """Hidden truth k = forecast + noise. selected: full output only where the house and battery take
+    everything (battery-full throttling: at high sun only the darker hours run free). Otherwise
+    throttling at random, independent of the output."""
+    rng = np.random.default_rng(seed)
+    sun = rng.uniform(0.1, 1.0, n)
+    p_cs = 4000 * sun
+    fc = rng.uniform(0.2, 1.0, n)
+    truth = np.clip(fc + rng.normal(0, 0.15, n), 0.05, 1.2) * p_cs
+    if selected:
+        room = rng.uniform(900, 1500, n)
+        cens = truth > room
+        pv = np.where(cens, room, truth)
+    else:
+        cens = rng.random(n) < 0.6
+        pv = np.where(cens, truth * rng.uniform(0.3, 0.9, n), truth)
+    t = {"ts": np.arange(n, dtype=float), "sun_el": np.degrees(np.arcsin(sun)), "p_cs": p_cs, "fc_kgti": fc,
+         "pv_w": pv, "regime": np.where(cens, "limited", "mpp").astype(object)}
+    cfg = M.ModelConfig(min_p_cs_w=300, p_ref_w=1000, params=FAST, high_sun_w=2000)
+    t.update(M.targets(t, cfg))
+    return t, truth, cfg
+
+
+def test_leak_guard_lifts_selected_throttling_and_leaves_random_throttling_alone():
+    for selected in (True, False):
+        t, truth, cfg = throttled_hours(selected=selected)
+        plain = M.fit(t, t["trainable"], GUARD_FEATURES, cfg, guard=False)
+        g = M.fit(t, t["trainable"], GUARD_FEATURES, cfg)
+        assert isinstance(plain, GBM) and isinstance(g, M.Guarded) and g.weight == M.guard_weight(g.ratio)
+        sunny = t["cens"] & (t["p_cs"] >= cfg.high_sun_w)
+        share = {name: np.sum(M.predict_k(m, t, sunny) * t["p_cs"][sunny]) / np.sum(truth[sunny])
+                 for name, m in (("plain", plain), ("guarded", g))}
+        if selected:        # the clock features learned "high sun = darker than the forecast says"
+            assert g.ratio < 0.85 and g.weight == 1.0 and g.full is None
+            assert share["plain"] < 0.7 and share["guarded"] > 0.8
+        else:
+            assert g.weight < 0.1
+            assert abs(share["guarded"] - share["plain"]) < 0.01
+
+
+def test_leak_guard_blend_round_trip_and_when_it_stays_off():
+    t, _, cfg = throttled_hours(n=3000, seed=4)
+    rows = t["trainable"]
+    full = M.fit(t, rows, GUARD_FEATURES, cfg, guard=False)
+    weather = M.fit(t, rows, ["fc_kgti"], cfg, guard=False)
+    part = M.Guarded(GUARD_FEATURES, 0.25, 0.975, full, weather)
+    assert np.allclose(M.predict_k(part, t), 0.75 * M.predict_k(full, t) + 0.25 * M.predict_k(weather, t))
+    for m in (part, M.fit(t, rows, GUARD_FEATURES, cfg), full):
+        back = M.load_model(json.loads(json.dumps(m.to_dict())))
+        assert type(back) is type(m) and np.array_equal(M.predict_k(back, t), M.predict_k(m, t))
+    # nothing to guard: no throttled rows, no clock features, uncensored fit, too few throttled sunny rows
+    free = dict(t, cens=np.zeros(len(t["ts"]), bool))
+    assert isinstance(M.fit(free, rows, GUARD_FEATURES, cfg), GBM)
+    assert isinstance(M.fit(t, rows, ["fc_kgti"], cfg), GBM)
+    assert isinstance(M.fit(t, rows, ["sun_el", "p_cs", "doy_sin"], cfg), GBM)     # sun/season only
+    assert isinstance(M.fit(t, rows, GUARD_FEATURES, cfg, censored=False), GBM)
+    sunny = np.flatnonzero(rows & t["cens"] & (t["p_cs"] >= cfg.high_sun_w))
+    few = rows & ~(t["cens"] & (t["p_cs"] >= cfg.high_sun_w))
+    few[sunny[:M.GUARD_MIN_ROWS - 1]] = True
+    assert isinstance(M.fit(t, few, GUARD_FEATURES, cfg), GBM)
+    few[sunny[M.GUARD_MIN_ROWS - 1]] = True
+    assert isinstance(M.fit(t, few, GUARD_FEATURES, cfg), M.Guarded)
+    assert M.guard_weight(1.02) == 0 and M.guard_weight(0.95) == pytest.approx(0.5) and M.guard_weight(0.8) == 1
 
 
 # ---------------------------------------------------------------- daily
