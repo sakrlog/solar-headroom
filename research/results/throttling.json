@@ -1,0 +1,559 @@
+{
+ "features": [
+  "sun_el",
+  "sun_el_max",
+  "sun_az",
+  "poa_cs",
+  "p_cs",
+  "doy_sin",
+  "doy_cos",
+  "hour",
+  "segment",
+  "fc_cloud_cover",
+  "fc_cloud_cover_low",
+  "fc_cloud_cover_mid",
+  "fc_cloud_cover_high",
+  "fc_temperature_2m",
+  "fc_relative_humidity_2m",
+  "fc_wind_speed_10m",
+  "fc_precipitation",
+  "fc_sunshine_duration",
+  "fc_kgti",
+  "fc_snowfall",
+  "fc_snow_depth"
+ ],
+ "throttled_frac": 0.02,
+ "sites": {
+  "golden": {
+   "location": "Golden, CO",
+   "kwp_model": 6.0,
+   "climate": "BSk",
+   "system": {
+    "battery_kwh_per_kwp": 1.6,
+    "charge_w_per_kwp": 500.0,
+    "discharge_w_per_kwp": 1000.0,
+    "soc_min": 10.0,
+    "taper_from": 95.0,
+    "efficiency": 0.95,
+    "soc_start": 60.0
+   },
+   "labels": {
+    "daylight_hours": 8573,
+    "mpp_pct": 28.8,
+    "limited_pct": 71.2,
+    "throttled_pct": 57.3,
+    "mpp_but_throttled_pct": 0.0,
+    "limited_but_free_pct": 19.6,
+    "wasted_energy_pct": 51.0,
+    "learned": {
+     "0.0": {
+      "charge_limit_w": 3000.0,
+      "v_full_max": null
+     }
+    }
+   },
+   "fit_s": 80.2,
+   "guard_by_fold": [
+    {
+     "ratio": 0.899,
+     "weight": 1.0
+    },
+    {
+     "ratio": 0.91,
+     "weight": 0.9
+    },
+    {
+     "ratio": 0.893,
+     "weight": 1.0
+    },
+    {
+     "ratio": 0.916,
+     "weight": 0.84
+    },
+    {
+     "ratio": 0.896,
+     "weight": 1.0
+    },
+    {
+     "ratio": 0.905,
+     "weight": 0.95
+    }
+   ],
+   "scores": {
+    "oracle": {
+     "all": {
+      "n": 7590,
+      "mae_pct": 17.5,
+      "bias_pct": 0.3
+     },
+     "throttled": {
+      "n": 4825,
+      "mae_pct": 14.0,
+      "bias_pct": -3.6
+     },
+     "daily_bank": {
+      "days": 726,
+      "mae_pct": 7.1,
+      "bias_pct": -0.5
+     }
+    },
+    "censored": {
+     "all": {
+      "n": 7590,
+      "mae_pct": 21.1,
+      "bias_pct": -5.3
+     },
+     "throttled": {
+      "n": 4825,
+      "mae_pct": 18.4,
+      "bias_pct": -10.9
+     },
+     "daily_bank": {
+      "days": 726,
+      "mae_pct": 9.7,
+      "bias_pct": -5.6
+     }
+    },
+    "guarded": {
+     "all": {
+      "n": 7590,
+      "mae_pct": 22.2,
+      "bias_pct": 2.8
+     },
+     "throttled": {
+      "n": 4825,
+      "mae_pct": 19.6,
+      "bias_pct": -1.1
+     },
+     "daily_bank": {
+      "days": 726,
+      "mae_pct": 9.4,
+      "bias_pct": 2.2
+     }
+    },
+    "weather_only": {
+     "all": {
+      "n": 7590,
+      "mae_pct": 22.7,
+      "bias_pct": 3.3
+     },
+     "throttled": {
+      "n": 4825,
+      "mae_pct": 20.1,
+      "bias_pct": -0.5
+     },
+     "daily_bank": {
+      "days": 726,
+      "mae_pct": 9.7,
+      "bias_pct": 2.6
+     }
+    },
+    "excluded": {
+     "all": {
+      "n": 7590,
+      "mae_pct": 58.4,
+      "bias_pct": -56.0
+     },
+     "throttled": {
+      "n": 4825,
+      "mae_pct": 60.8,
+      "bias_pct": -60.5
+     },
+     "daily_bank": {
+      "days": 726,
+      "mae_pct": 38.4,
+      "bias_pct": -38.4
+     }
+    },
+    "naive": {
+     "all": {
+      "n": 7590,
+      "mae_pct": 58.3,
+      "bias_pct": -51.9
+     },
+     "throttled": {
+      "n": 4825,
+      "mae_pct": 65.3,
+      "bias_pct": -64.9
+     },
+     "daily_bank": {
+      "days": 726,
+      "mae_pct": 46.0,
+      "bias_pct": -45.8
+     }
+    },
+    "physics": {
+     "all": {
+      "n": 7590,
+      "mae_pct": 46.2,
+      "bias_pct": 39.0
+     },
+     "throttled": {
+      "n": 4825,
+      "mae_pct": 36.1,
+      "bias_pct": 28.6
+     },
+     "daily_bank": {
+      "days": 726,
+      "mae_pct": 30.2,
+      "bias_pct": 29.7
+     }
+    }
+   }
+  },
+  "henderson": {
+   "location": "Henderson, NV",
+   "kwp_model": 6.48,
+   "climate": "BWh",
+   "system": {
+    "battery_kwh_per_kwp": 1.6,
+    "charge_w_per_kwp": 500.0,
+    "discharge_w_per_kwp": 1000.0,
+    "soc_min": 10.0,
+    "taper_from": 95.0,
+    "efficiency": 0.95,
+    "soc_start": 60.0
+   },
+   "labels": {
+    "daylight_hours": 8744,
+    "mpp_pct": 22.2,
+    "limited_pct": 77.8,
+    "throttled_pct": 63.3,
+    "mpp_but_throttled_pct": 0.0,
+    "limited_but_free_pct": 18.7,
+    "wasted_energy_pct": 58.7,
+    "learned": {
+     "0.0": {
+      "charge_limit_w": 3240.0,
+      "v_full_max": null
+     }
+    }
+   },
+   "fit_s": 82.8,
+   "guard_by_fold": [
+    {
+     "ratio": 0.962,
+     "weight": 0.38
+    },
+    {
+     "ratio": 0.979,
+     "weight": 0.21
+    },
+    {
+     "ratio": 0.977,
+     "weight": 0.23
+    },
+    {
+     "ratio": 0.959,
+     "weight": 0.41
+    },
+    {
+     "ratio": 0.925,
+     "weight": 0.75
+    },
+    {
+     "ratio": 0.931,
+     "weight": 0.69
+    }
+   ],
+   "scores": {
+    "oracle": {
+     "all": {
+      "n": 7782,
+      "mae_pct": 8.6,
+      "bias_pct": 0.0
+     },
+     "throttled": {
+      "n": 5479,
+      "mae_pct": 7.2,
+      "bias_pct": -1.1
+     },
+     "daily_bank": {
+      "days": 729,
+      "mae_pct": 3.9,
+      "bias_pct": 0.2
+     }
+    },
+    "censored": {
+     "all": {
+      "n": 7782,
+      "mae_pct": 11.4,
+      "bias_pct": -2.5
+     },
+     "throttled": {
+      "n": 5479,
+      "mae_pct": 10.2,
+      "bias_pct": -4.6
+     },
+     "daily_bank": {
+      "days": 729,
+      "mae_pct": 6.2,
+      "bias_pct": -2.5
+     }
+    },
+    "guarded": {
+     "all": {
+      "n": 7782,
+      "mae_pct": 10.8,
+      "bias_pct": -0.0
+     },
+     "throttled": {
+      "n": 5479,
+      "mae_pct": 9.4,
+      "bias_pct": -1.7
+     },
+     "daily_bank": {
+      "days": 729,
+      "mae_pct": 5.9,
+      "bias_pct": -0.1
+     }
+    },
+    "weather_only": {
+     "all": {
+      "n": 7782,
+      "mae_pct": 11.4,
+      "bias_pct": 1.9
+     },
+     "throttled": {
+      "n": 5479,
+      "mae_pct": 10.0,
+      "bias_pct": 0.4
+     },
+     "daily_bank": {
+      "days": 729,
+      "mae_pct": 6.2,
+      "bias_pct": 1.8
+     }
+    },
+    "excluded": {
+     "all": {
+      "n": 7782,
+      "mae_pct": 46.1,
+      "bias_pct": -45.0
+     },
+     "throttled": {
+      "n": 5479,
+      "mae_pct": 48.5,
+      "bias_pct": -48.3
+     },
+     "daily_bank": {
+      "days": 729,
+      "mae_pct": 35.6,
+      "bias_pct": -35.6
+     }
+    },
+    "naive": {
+     "all": {
+      "n": 7782,
+      "mae_pct": 62.0,
+      "bias_pct": -59.4
+     },
+     "throttled": {
+      "n": 5479,
+      "mae_pct": 70.0,
+      "bias_pct": -69.8
+     },
+     "daily_bank": {
+      "days": 729,
+      "mae_pct": 55.1,
+      "bias_pct": -55.1
+     }
+    },
+    "physics": {
+     "all": {
+      "n": 7782,
+      "mae_pct": 24.2,
+      "bias_pct": 20.1
+     },
+     "throttled": {
+      "n": 5479,
+      "mae_pct": 19.3,
+      "bias_pct": 15.3
+     },
+     "daily_bank": {
+      "days": 729,
+      "mae_pct": 17.3,
+      "bias_pct": 17.2
+     }
+    }
+   }
+  },
+  "arbuckle": {
+   "location": "Arbuckle, CA",
+   "kwp_model": 8.0,
+   "climate": "Csa",
+   "system": {
+    "battery_kwh_per_kwp": 1.6,
+    "charge_w_per_kwp": 500.0,
+    "discharge_w_per_kwp": 1000.0,
+    "soc_min": 10.0,
+    "taper_from": 95.0,
+    "efficiency": 0.95,
+    "soc_start": 60.0
+   },
+   "labels": {
+    "daylight_hours": 20149,
+    "mpp_pct": 32.5,
+    "limited_pct": 67.5,
+    "throttled_pct": 54.5,
+    "mpp_but_throttled_pct": 0.0,
+    "limited_but_free_pct": 19.2,
+    "wasted_energy_pct": 53.0,
+    "learned": {
+     "0.0": {
+      "charge_limit_w": 4000.0000000000005,
+      "v_full_max": null
+     }
+    }
+   },
+   "fit_s": 178.6,
+   "guard_by_fold": [
+    {
+     "ratio": 0.846,
+     "weight": 1.0
+    },
+    {
+     "ratio": 0.852,
+     "weight": 1.0
+    },
+    {
+     "ratio": 0.846,
+     "weight": 1.0
+    },
+    {
+     "ratio": 0.843,
+     "weight": 1.0
+    },
+    {
+     "ratio": 0.901,
+     "weight": 0.99
+    },
+    {
+     "ratio": 0.863,
+     "weight": 1.0
+    }
+   ],
+   "scores": {
+    "oracle": {
+     "all": {
+      "n": 18319,
+      "mae_pct": 15.7,
+      "bias_pct": 0.2
+     },
+     "throttled": {
+      "n": 10978,
+      "mae_pct": 12.0,
+      "bias_pct": -2.8
+     },
+     "daily_bank": {
+      "days": 1691,
+      "mae_pct": 8.2,
+      "bias_pct": -0.3
+     }
+    },
+    "censored": {
+     "all": {
+      "n": 18319,
+      "mae_pct": 26.5,
+      "bias_pct": -16.7
+     },
+     "throttled": {
+      "n": 10978,
+      "mae_pct": 26.2,
+      "bias_pct": -24.2
+     },
+     "daily_bank": {
+      "days": 1691,
+      "mae_pct": 18.2,
+      "bias_pct": -16.8
+     }
+    },
+    "guarded": {
+     "all": {
+      "n": 18319,
+      "mae_pct": 18.7,
+      "bias_pct": -4.1
+     },
+     "throttled": {
+      "n": 10978,
+      "mae_pct": 15.8,
+      "bias_pct": -8.3
+     },
+     "daily_bank": {
+      "days": 1691,
+      "mae_pct": 10.0,
+      "bias_pct": -4.4
+     }
+    },
+    "weather_only": {
+     "all": {
+      "n": 18319,
+      "mae_pct": 18.7,
+      "bias_pct": -4.0
+     },
+     "throttled": {
+      "n": 10978,
+      "mae_pct": 15.8,
+      "bias_pct": -8.3
+     },
+     "daily_bank": {
+      "days": 1691,
+      "mae_pct": 10.0,
+      "bias_pct": -4.4
+     }
+    },
+    "excluded": {
+     "all": {
+      "n": 18319,
+      "mae_pct": 58.6,
+      "bias_pct": -55.9
+     },
+     "throttled": {
+      "n": 10978,
+      "mae_pct": 63.6,
+      "bias_pct": -63.5
+     },
+     "daily_bank": {
+      "days": 1691,
+      "mae_pct": 42.0,
+      "bias_pct": -42.0
+     }
+    },
+    "naive": {
+     "all": {
+      "n": 18319,
+      "mae_pct": 59.1,
+      "bias_pct": -53.2
+     },
+     "throttled": {
+      "n": 10978,
+      "mae_pct": 67.8,
+      "bias_pct": -67.6
+     },
+     "daily_bank": {
+      "days": 1691,
+      "mae_pct": 48.5,
+      "bias_pct": -48.4
+     }
+    },
+    "physics": {
+     "all": {
+      "n": 18319,
+      "mae_pct": 35.1,
+      "bias_pct": 31.0
+     },
+     "throttled": {
+      "n": 10978,
+      "mae_pct": 27.8,
+      "bias_pct": 24.5
+     },
+     "daily_bank": {
+      "days": 1691,
+      "mae_pct": 25.1,
+      "bias_pct": 24.6
+     }
+    }
+   }
+  }
+ }
+}

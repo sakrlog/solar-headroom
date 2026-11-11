@@ -25,15 +25,17 @@ custom_components/solar_potential/engine/   numpy-only engine, no Home Assistant
     history.py   Home Assistant statistics rows -> aligned hourly / 5-minute arrays (units, signs, renames)
     weather.py   Open-Meteo request builders and parsers (satellite, forecasts, archives; no I/O)
     features.py  sun/season, satellite clear-sky indices (concurrent and real-time), forecast features
-    models.py    targets, fitting and scoring of the potential models (k = power / clear-sky power)
+    models.py    targets, censored fitting with the leak guard, scoring (k = power / clear-sky power)
     daily.py     daily solar bank: target reconstruction, forecast features, ranges, today's bank
 tests/                                       unit + parity tests (pvlib / LightGBM as dev-only references)
+research/                                    experiments on public data (not shipped): learning curves,
+                                             simulated throttling; see research/README.md
 ```
 
 ## Development
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install numpy pytest ruff pvlib pandas lightgbm
+python3 -m venv .venv && .venv/bin/pip install numpy pytest ruff pvlib pandas lightgbm pyarrow
 .venv/bin/python -m pytest
 .venv/bin/ruff check .
 ```

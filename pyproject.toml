@@ -8,6 +8,8 @@ dependencies = ["numpy>=1.26"]
 [project.optional-dependencies]
 # parity references and test tooling only; the integration itself needs numpy alone
 dev = ["pytest", "ruff", "pvlib", "pandas", "lightgbm"]
+# research/ scripts (public PVDAQ data + Open-Meteo archives); not needed by the integration
+research = ["pandas", "pyarrow"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
