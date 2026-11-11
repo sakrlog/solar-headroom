@@ -84,3 +84,33 @@ def test_learn_voltage_band_separates_throttled_from_full_output():
 def test_unknown_kind_rejected():
     with pytest.raises(ValueError):
         R.RegimeConfig(kind="solar_farm")
+
+
+def test_auto_label_learns_thresholds_per_segment():
+    """Two eras with different string voltages (e.g. before/after a rewiring): each learns its own band."""
+    rng = np.random.default_rng(4)
+    parts, segs = [], []
+    for s, (v_full, v_thr) in enumerate(((205, 250), (405, 465))):
+        n_full, n_thr, n_mid = 300, 200, 100
+        parts.append({
+            # battery-rule full output | battery full and idle (throttled) | grid on: only the voltage rule can tell
+            "pv_v_max": np.concatenate([rng.normal(v_full, 5, n_full), rng.normal(v_thr, 6, n_thr),
+                                        rng.normal(v_full, 5, n_mid)]),
+            "soc_max": np.concatenate([np.full(n_full, 60.0), np.full(n_thr, 100.0), np.full(n_mid, 95.0)]),
+            "bat_w_min": np.concatenate([np.full(n_full, 100.0), np.full(n_thr, -20.0), np.full(n_mid, -20.0)]),
+            "bat_w_max": np.concatenate([np.full(n_full, 500.0), np.full(n_thr, 10.0), np.full(n_mid, 10.0)]),
+            "grid_v_max": np.concatenate([np.zeros(n_full + n_thr), np.full(n_mid, 230.0)]),
+        })
+        segs.append(np.full(n_full + n_thr + n_mid, float(s)))
+    stats = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
+    stats["pv_w"] = np.full(len(stats["soc_max"]), 2000.0)
+    out, learned = R.auto_label(stats, R.RegimeConfig(kind="off_grid"), segment=np.concatenate(segs))
+    # the edge sits just under the throttled cluster (its 1 % quantile)
+    assert 225 < learned[0.0]["v_full_max"] < 245 and 440 < learned[1.0]["v_full_max"] < 460
+    for s in (0, 1):
+        o = s * 600
+        assert (out["regime"][o:o + 300] == "mpp").all()
+        assert (out["regime"][o + 300:o + 500] == "limited").mean() >= 0.98    # max_leak: ~1 % by design
+        assert (out["reason"][o + 500:o + 600] == "voltage").mean() > 0.95
+    fixed, _ = R.auto_label(stats, R.RegimeConfig(kind="off_grid", v_full_max=300), segment=np.concatenate(segs))
+    assert (fixed["regime"][1100:1200] == "limited").all()        # a given threshold is kept, not learned

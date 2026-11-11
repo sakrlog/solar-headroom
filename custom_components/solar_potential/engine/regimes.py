@@ -24,7 +24,7 @@ grid power + = importing.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -160,6 +160,10 @@ def learn_voltage_band(pv_v_max, regime, reason, pv_w, soc_max=None, bat_w_min=N
     (battery practically full and idle: it neither charged much nor discharged) sit at high voltage.
     The edge is the voltage that at most `max_leak` of them fell below. It is accepted only if it is
     useful: at least `min_coverage` of the battery-rule full-output periods stayed below it.
+    The throttled examples are deliberately impure (a full, idle battery while the grid covers the load
+    can also mean full output): impurities only lower the edge, which loses labels but never calls a
+    throttled period full output. (Checked on real data: purifying them raised the edge to where the
+    newly labelled hours delivered only ~84 % of their hindsight potential.)
     Returns {"v_full_max": float|None, "n_full", "n_throttled", "coverage"}."""
     v, pv = np.asarray(pv_v_max, float), np.asarray(pv_w, float)
     battery = np.isin(np.asarray(reason, dtype=object), ["discharging", "battery_hungry"])
@@ -168,7 +172,8 @@ def learn_voltage_band(pv_v_max, regime, reason, pv_w, soc_max=None, bat_w_min=N
     if soc_max is None or bat_w_min is None or bat_w_max is None or full.sum() < min_periods:
         return out
     soc, bmin, bmax = (np.asarray(a, float) for a in (soc_max, bat_w_min, bat_w_max))
-    throttled = (soc >= 98) & (bmin > -150) & (bmax < 30) & (pv > 100) & np.isfinite(v)
+    usable = np.isin(np.asarray(regime, dtype=object), [MPP, LIMITED])    # no frozen data, no PV at night
+    throttled = usable & (soc >= 98) & (bmin > -150) & (bmax < 30) & (pv > 100) & np.isfinite(v)
     out["n_throttled"] = int(throttled.sum())
     if throttled.sum() < min_periods:
         return out
@@ -178,3 +183,36 @@ def learn_voltage_band(pv_v_max, regime, reason, pv_w, soc_max=None, bat_w_min=N
     if coverage >= min_coverage:
         out["v_full_max"] = round(edge, 1)
     return out
+
+
+def auto_label(stats: dict, cfg: RegimeConfig, segment=None, sun_el=None) -> tuple[dict[str, np.ndarray], dict]:
+    """Label with thresholds learned per system segment (see features.sky_features: changes such as a
+    rewiring split the history). Per segment: learn the charge limit, label with the battery/export
+    rules, learn the PV-voltage band from those labels, then label again with the voltage rule.
+    Thresholds set in cfg are kept. Returns (labels, {segment: learned thresholds})."""
+    pv = np.asarray(stats["pv_w"], dtype=float)
+    n = len(pv)
+    seg = np.zeros(n) if segment is None else np.asarray(segment, dtype=float)
+    el = None if sun_el is None else np.asarray(sun_el, dtype=float)
+    out = {"regime": np.full(n, NIGHT, dtype=object), "reason": np.full(n, "", dtype=object),
+           "ext_any": np.zeros(n, bool)}
+    learned = {}
+    for s in np.unique(seg):
+        m = seg == s
+        sub = {k: np.asarray(v)[m] for k, v in stats.items()}
+        c = cfg
+        if c.kind != "unlimited" and c.charge_limit_w is None and "bat_w_min" in sub:
+            c = replace(c, charge_limit_w=learn_charge_limit(sub["bat_w_min"]))
+        first = label(sub, replace(c, v_full_max=None) if cfg.v_full_max is None else c,
+                      None if el is None else el[m])
+        band = {"v_full_max": c.v_full_max}
+        if cfg.v_full_max is None and "pv_v_max" in sub:
+            band = learn_voltage_band(sub["pv_v_max"], first["regime"], first["reason"], sub["pv_w"],
+                                      sub.get("soc_max"), sub.get("bat_w_min"), sub.get("bat_w_max"))
+        final = first
+        if cfg.v_full_max is None and band["v_full_max"] is not None:
+            final = label(sub, replace(c, v_full_max=band["v_full_max"]), None if el is None else el[m])
+        for k in out:
+            out[k][m] = final[k]
+        learned[float(s)] = {"charge_limit_w": c.charge_limit_w, **band}
+    return out, learned

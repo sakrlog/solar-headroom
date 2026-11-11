@@ -21,8 +21,12 @@ online-learning library. Everything runs on numpy alone, which ships with Home A
 custom_components/solar_potential/engine/   numpy-only engine, no Home Assistant imports
     solar.py     sun position, clear sky (Ineichen), plane of array (Hay-Davies), IAM, temperature
     gbm.py       histogram gradient boosting with a censored squared loss, JSON persistence
-    regimes.py   full output vs throttled, per system type; learns voltage band and charge limit
-    history.py   Home Assistant statistics rows -> aligned hourly / 5-minute arrays
+    regimes.py   full output vs throttled, per system type; learns voltage band and charge limit per segment
+    history.py   Home Assistant statistics rows -> aligned hourly / 5-minute arrays (units, signs, renames)
+    weather.py   Open-Meteo request builders and parsers (satellite, forecasts, archives; no I/O)
+    features.py  sun/season, satellite clear-sky indices (concurrent and real-time), forecast features
+    models.py    targets, fitting and scoring of the potential models (k = power / clear-sky power)
+    daily.py     daily solar bank: target reconstruction, forecast features, ranges, today's bank
 tests/                                       unit + parity tests (pvlib / LightGBM as dev-only references)
 ```
 
