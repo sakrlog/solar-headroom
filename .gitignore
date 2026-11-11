@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+# data never belongs in the repo (public datasets are downloaded by research scripts)
+research/data/
+*.db
+*.db-*
+*.sqlite
+*.parquet
+*.csv
+.private/

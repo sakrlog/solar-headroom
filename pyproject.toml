@@ -1,0 +1,23 @@
+[project]
+name = "solar-potential-dev"
+version = "0.0.0"
+description = "Development tooling for the Solar Potential Home Assistant integration (working name)"
+requires-python = ">=3.12"
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+# parity references and test tooling only; the integration itself needs numpy alone
+dev = ["pytest", "ruff", "pvlib", "pandas", "lightgbm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore:.*dayofyear is deprecated.*",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
