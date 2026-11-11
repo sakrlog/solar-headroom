@@ -22,6 +22,7 @@ custom_components/solar_potential/engine/   numpy-only engine, no Home Assistant
     solar.py     sun position, clear sky (Ineichen), plane of array (Hay-Davies), IAM, temperature
     gbm.py       histogram gradient boosting with a censored squared loss, JSON persistence
     regimes.py   full output vs throttled, per system type; learns voltage band and charge limit
+    history.py   Home Assistant statistics rows -> aligned hourly / 5-minute arrays
 tests/                                       unit + parity tests (pvlib / LightGBM as dev-only references)
 ```
 
