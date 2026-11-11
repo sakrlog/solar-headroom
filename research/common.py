@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "custom_components" / "solar_potential"))
+sys.path.insert(0, str(ROOT / "custom_components" / "solar_headroom"))
 
 from engine import features as F  # noqa: E402
 from engine import solar as S  # noqa: E402
@@ -35,7 +35,7 @@ from engine import weather as W  # noqa: E402
 DATA = ROOT / "research" / "data"
 RESULTS = ROOT / "research" / "results"
 OEDI = "https://oedi-data-lake.s3.amazonaws.com/"
-USER_AGENT = "solar-potential-research/0.1"      # generic client name; no contact details
+USER_AGENT = "solar-headroom-research/0.1"      # generic client name; no contact details
 HOUR = 3600
 
 

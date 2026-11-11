@@ -1,7 +1,7 @@
 [project]
-name = "solar-potential-dev"
+name = "solar-headroom-dev"
 version = "0.0.0"
-description = "Development tooling for the Solar Potential Home Assistant integration (working name)"
+description = "Development tooling for the Solar Headroom Home Assistant integration"
 requires-python = ">=3.12"
 dependencies = ["numpy>=1.26"]
 

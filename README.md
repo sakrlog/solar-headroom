@@ -1,10 +1,10 @@
-# Solar Potential (working name)
+# Solar Headroom
 
 A Home Assistant integration that knows what your solar panels **could** deliver right now, even
 while the inverter is holding back (battery full, zero export, export limit, deliberate
 curtailment), and learns your system from Home Assistant's own history.
 
-Status: **Phase 0, engine port** (no Home Assistant code yet).
+Status: **engine done and validated (Phase 0); Home Assistant integration in progress.**
 
 ## Design in one paragraph
 
@@ -18,7 +18,7 @@ online-learning library. Everything runs on numpy alone, which ships with Home A
 ## Layout
 
 ```
-custom_components/solar_potential/engine/   numpy-only engine, no Home Assistant imports
+custom_components/solar_headroom/engine/    numpy-only engine, no Home Assistant imports
     solar.py     sun position, clear sky (Ineichen), plane of array (Hay-Davies), IAM, temperature
     gbm.py       histogram gradient boosting with a censored squared loss, JSON persistence
     regimes.py   full output vs throttled, per system type; learns voltage band and charge limit per segment
@@ -39,3 +39,10 @@ python3 -m venv .venv && .venv/bin/pip install numpy pytest ruff pvlib pandas li
 .venv/bin/python -m pytest
 .venv/bin/ruff check .
 ```
+
+## License
+
+Apache License 2.0, see [LICENSE](LICENSE). Copyright 2026 sakrlog.
+
+Weather and satellite data: [Open-Meteo](https://open-meteo.com) (CC BY 4.0). Research data:
+NREL PVDAQ (CC BY 4.0), see `research/README.md`.
