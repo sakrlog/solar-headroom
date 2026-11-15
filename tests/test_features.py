@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+
 from engine import features as F
 from engine import solar as S
 

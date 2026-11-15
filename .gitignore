@@ -1,4 +1,7 @@
 .venv/
+.venv-ha/
+.tools/
+.ha-config/
 __pycache__/
 *.pyc
 .pytest_cache/

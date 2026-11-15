@@ -1,0 +1,14 @@
+{
+  "domain": "solar_headroom",
+  "name": "Solar Headroom",
+  "after_dependencies": ["energy"],
+  "codeowners": ["@sakrlog"],
+  "config_flow": true,
+  "dependencies": ["recorder"],
+  "documentation": "https://github.com/sakrlog/solar-headroom",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/sakrlog/solar-headroom/issues",
+  "requirements": ["numpy>=1.26.0"],
+  "version": "0.1.0"
+}

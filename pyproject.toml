@@ -13,8 +13,12 @@ research = ["pandas", "pyarrow"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Home Assistant tests (.venv-ha) run on pytest-asyncio; harmless in the engine-only venv
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 filterwarnings = [
     "ignore:.*dayofyear is deprecated.*",
+    "ignore:Unknown config option. asyncio:pytest.PytestConfigWarning",
 ]
 
 [tool.ruff]
@@ -23,3 +27,11 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+# Home Assistant's convention: homeassistant imports in their own block
+known-first-party = ["custom_components", "engine"]
+section-order = ["future", "standard-library", "third-party", "homeassistant", "first-party", "local-folder"]
+
+[tool.ruff.lint.isort.sections]
+homeassistant = ["homeassistant"]

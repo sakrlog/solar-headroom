@@ -1,0 +1,136 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Your solar power sensor",
+        "description": "Pick the sensor(s) that show how much power your panels produce right now (W or kW). With several strings or inverters, pick them all; they are added up. Solar Headroom learns from this sensor's history in Home Assistant.",
+        "data": {
+          "pv_power": "Solar power sensor(s)"
+        },
+        "data_description": {
+          "pv_power": "Power from the panels (DC or inverter PV input), not the house load."
+        }
+      },
+      "panels": {
+        "title": "Your panels",
+        "description": "One group of panels that share a direction and tilt. You can add more groups (e.g. east and west roofs) after setup.",
+        "data": {
+          "kwp": "Panel size (kWp)",
+          "tilt": "Tilt",
+          "azimuth": "Direction (azimuth)"
+        },
+        "data_description": {
+          "kwp": "Total nameplate power of the panels in this group, in kW (e.g. 12 panels × 450 W = 5.4).",
+          "tilt": "Angle from horizontal: 0° = flat, 90° = vertical. A guess within 10° is fine.",
+          "azimuth": "Compass direction the panels face: 90° = east, 180° = south, 270° = west."
+        }
+      },
+      "history": {
+        "title": "History found",
+        "description": "Found {history} of history for your solar sensor. After you finish, Solar Headroom reads it together with weather archives from Open-Meteo and learns your system in the background (a few minutes). Until then the forecast uses physics only.\n\nOnly your location rounded to ~10 km and the panel direction and tilt are sent to Open-Meteo. No account, no key."
+      },
+      "no_history": {
+        "title": "No history yet",
+        "description": "Home Assistant has no long-term statistics for this sensor yet (it needs `state_class: measurement`). Solar Headroom starts with a physics forecast and learns as data comes in; most systems are learned within a few weeks.\n\nOnly your location rounded to ~10 km and the panel direction and tilt are sent to Open-Meteo. No account, no key."
+      }
+    },
+    "error": {
+      "no_sensor": "Pick at least one sensor."
+    },
+    "abort": {
+      "already_configured": "These sensors are already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Solar Headroom",
+        "data": {
+          "pv_power": "Solar power sensor(s)"
+        },
+        "description": "Change the solar power sensor(s). The models are retrained afterwards."
+      }
+    },
+    "error": {
+      "no_sensor": "Pick at least one sensor."
+    }
+  },
+  "config_subentries": {
+    "plane": {
+      "entry_type": "Panel group",
+      "initiate_flow": {
+        "user": "Add panel group"
+      },
+      "abort": {
+        "max_planes": "You can add up to 6 panel groups.",
+        "reconfigure_successful": "Panel group updated."
+      },
+      "step": {
+        "user": {
+          "title": "Add panel group",
+          "description": "Panels that share one direction and tilt.",
+          "data": {
+            "kwp": "Panel size (kWp)",
+            "tilt": "Tilt",
+            "azimuth": "Direction (azimuth)"
+          },
+          "data_description": {
+            "kwp": "Total nameplate power of the panels in this group, in kW (e.g. 12 panels × 450 W = 5.4).",
+            "tilt": "Angle from horizontal: 0° = flat, 90° = vertical. A guess within 10° is fine.",
+            "azimuth": "Compass direction the panels face: 90° = east, 180° = south, 270° = west."
+          }
+        },
+        "reconfigure": {
+          "title": "Edit panel group",
+          "description": "Panels that share one direction and tilt.",
+          "data": {
+            "kwp": "Panel size (kWp)",
+            "tilt": "Tilt",
+            "azimuth": "Direction (azimuth)"
+          },
+          "data_description": {
+            "kwp": "Total nameplate power of the panels in this group, in kW (e.g. 12 panels × 450 W = 5.4).",
+            "tilt": "Angle from horizontal: 0° = flat, 90° = vertical. A guess within 10° is fine.",
+            "azimuth": "Compass direction the panels face: 90° = east, 180° = south, 270° = west."
+          }
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "potential_now": {
+        "name": "Solar potential"
+      },
+      "bank_today": {
+        "name": "Solar bank today"
+      },
+      "bank_left_today": {
+        "name": "Solar bank left today"
+      },
+      "forecast_tomorrow": {
+        "name": "Solar forecast tomorrow"
+      },
+      "status": {
+        "name": "Learning status",
+        "state": {
+          "starting": "Starting",
+          "collecting": "Collecting data",
+          "learning": "Learning",
+          "ready": "Ready",
+          "degraded": "Degraded"
+        }
+      }
+    },
+    "button": {
+      "retrain": {
+        "name": "Retrain now"
+      }
+    }
+  },
+  "exceptions": {
+    "no_plane": {
+      "message": "No panel group configured; add one to use Solar Headroom."
+    }
+  }
+}

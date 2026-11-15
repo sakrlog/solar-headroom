@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import numpy as np
 import pytest
+
 from engine import history as H
 
 T0 = 1_700_000_000 - 1_700_000_000 % 3600      # an hour boundary

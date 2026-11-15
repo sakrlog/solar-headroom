@@ -18,6 +18,12 @@ online-learning library. Everything runs on numpy alone, which ships with Home A
 ## Layout
 
 ```
+custom_components/solar_headroom/            the Home Assistant integration
+    config_flow.py   solar sensor(s) -> panels -> history check; panel groups are subentries
+    coordinator.py   history sync (recorder statistics), Open-Meteo, nightly training, outputs
+    sensor.py        potential now, solar bank today / left today / tomorrow, learning status
+    energy.py        hourly forecast for the Energy dashboard
+    button.py, diagnostics.py, translations/
 custom_components/solar_headroom/engine/    numpy-only engine, no Home Assistant imports
     solar.py     sun position, clear sky (Ineichen), plane of array (Hay-Davies), IAM, temperature
     gbm.py       histogram gradient boosting with a censored squared loss, JSON persistence
@@ -27,17 +33,28 @@ custom_components/solar_headroom/engine/    numpy-only engine, no Home Assistant
     features.py  sun/season, satellite clear-sky indices (concurrent and real-time), forecast features
     models.py    targets, censored fitting with the leak guard, scoring (k = power / clear-sky power)
     daily.py     daily solar bank: target reconstruction, forecast features, ranges, today's bank
+    store.py     the integration's SQLite file: statistics rows, weather archives, models
+    pipeline.py  archives to request, training with champion/challenger, outputs from the live forecast
+    train_job.py nightly training as a separate low-priority process (Home Assistant's own Python)
 tests/                                       unit + parity tests (pvlib / LightGBM as dev-only references)
+tests/ha/                                    integration tests (Home Assistant test harness, fake Open-Meteo)
 research/                                    experiments on public data (not shipped): learning curves,
                                              simulated throttling; see research/README.md
 ```
 
 ## Development
 
+Two environments: the engine on any Python >= 3.12 with the reference libraries, and Home Assistant's
+test harness (Home Assistant 2026.10+ needs Python 3.14; `uv` installs it without admin rights).
+
 ```bash
+# engine + parity references
 python3 -m venv .venv && .venv/bin/pip install numpy pytest ruff pvlib pandas lightgbm pyarrow
-.venv/bin/python -m pytest
-.venv/bin/ruff check .
+.venv/bin/python -m pytest            # tests/ha is skipped here
+# Home Assistant
+uv venv .venv-ha --python 3.14 && VIRTUAL_ENV=.venv-ha uv pip install pytest-homeassistant-custom-component ruff
+.venv-ha/bin/python -m pytest         # engine tests without the parity references + tests/ha
+.venv-ha/bin/ruff check .
 ```
 
 ## License

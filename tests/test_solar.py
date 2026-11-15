@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+
 from engine import solar as S
 
 pvlib = pytest.importorskip("pvlib")

@@ -27,6 +27,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import SITES, aggregate, hour_table, load_power, site_and_planes, write_result  # noqa: E402
+
 from engine import daily as D  # noqa: E402
 from engine import features as F  # noqa: E402
 from engine import models as M  # noqa: E402
