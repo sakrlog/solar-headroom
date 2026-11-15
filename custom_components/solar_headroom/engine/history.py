@@ -57,18 +57,31 @@ def grid(start: float, end: float, period: int) -> np.ndarray:
     return np.arange(s, end, period, dtype=float)
 
 
-def rows_to_arrays(rows: Iterable[Mapping], starts: np.ndarray, scale: float = 1.0,
+def columns(rows: Iterable[Mapping] | Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Rows ([{"start", "mean", "min", "max"}, ...]) or columns ({"start": array, ...}) -> float columns
+    (NaN where a value is missing). Columns keep large histories compact (no object per row)."""
+    if isinstance(rows, Mapping):
+        t = np.asarray(rows.get("start", ()), dtype=float)
+        return {"start": t, **{f: np.asarray(rows[f], dtype=float) if f in rows else np.full(len(t), np.nan)
+                               for f in FIELDS}}
+    rows = list(rows)
+    return {"start": np.array([_start_s(r["start"]) for r in rows], dtype=float),
+            **{f: np.array([np.nan if r.get(f) is None else float(r[f]) for r in rows], dtype=float)
+               for f in FIELDS}}
+
+
+def rows_to_arrays(rows: Iterable[Mapping] | Mapping[str, np.ndarray], starts: np.ndarray, scale: float = 1.0,
                    since: float | None = None, until: float | None = None) -> dict[str, np.ndarray]:
-    """mean/min/max of statistics rows placed on `starts` (NaN where no row). Rows whose start is not
-    on the grid are ignored (a wrong period length would otherwise mix silently)."""
+    """mean/min/max of statistics rows (or columns, see `columns`) placed on `starts` (NaN where no row).
+    Rows whose start is not on the grid are ignored (a wrong period length would otherwise mix silently)."""
     starts = np.asarray(starts, dtype=float)
     n = len(starts)
     out = {f: np.full(n, np.nan) for f in FIELDS}
-    rows = list(rows)
-    if not rows or n == 0:
+    cols = columns(rows)
+    t = cols["start"]
+    if not len(t) or n == 0:
         return out
-    t = np.array([_start_s(r["start"]) for r in rows])
-    vals = {f: np.array([np.nan if r.get(f) is None else float(r[f]) for r in rows]) for f in FIELDS}
+    vals = {f: cols[f] for f in FIELDS}
     keep = np.ones(len(t), bool)
     if since is not None:
         keep &= t >= since
@@ -98,7 +111,7 @@ def _valid_window(src: Source, starts: np.ndarray) -> np.ndarray:
     return ok
 
 
-def part_arrays(part: Part, stats: Mapping[str, list], starts: np.ndarray) -> tuple[dict, np.ndarray]:
+def part_arrays(part: Part, stats: Mapping, starts: np.ndarray) -> tuple[dict, np.ndarray]:
     """First id with a row wins, per period. Returns (arrays, applicable) where `applicable` marks the
     periods inside at least one id's validity window."""
     n = len(starts)
@@ -113,7 +126,7 @@ def part_arrays(part: Part, stats: Mapping[str, list], starts: np.ndarray) -> tu
     return out, applicable
 
 
-def role_arrays(role: Role, stats: Mapping[str, list], starts: np.ndarray) -> dict[str, np.ndarray]:
+def role_arrays(role: Role, stats: Mapping, starts: np.ndarray) -> dict[str, np.ndarray]:
     """Sum of the parts of a role; NaN where an applicable part has no row."""
     n = len(starts)
     total = {f: np.zeros(n) for f in FIELDS}
@@ -136,7 +149,7 @@ def role_arrays(role: Role, stats: Mapping[str, list], starts: np.ndarray) -> di
     return total
 
 
-def period_table(roles: Mapping[str, Role], stats: Mapping[str, list], start: float, end: float,
+def period_table(roles: Mapping[str, Role], stats: Mapping, start: float, end: float,
                  period: int = HOUR) -> dict[str, np.ndarray]:
     """{"ts": period starts, "<role>": mean, "<role>_min", "<role>_max"} for every role."""
     starts = grid(start, end, period)

@@ -18,6 +18,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS stat_rows (
     statistic_id TEXT NOT NULL, start REAL NOT NULL, mean REAL, min REAL, max REAL,
@@ -28,6 +30,9 @@ CREATE TABLE IF NOT EXISTS responses (
 CREATE TABLE IF NOT EXISTS blobs (name TEXT PRIMARY KEY, saved REAL NOT NULL, body BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
+
+
+_MISSING = -1.0e300          # NULL inside numeric row columns (SQLite has no NaN)
 
 
 def _pack(obj: Any) -> bytes:
@@ -76,6 +81,24 @@ class Store:
         with closing(self._connect()) as db:
             for sid, s, mean, lo, hi in db.execute(q + " ORDER BY start", args):
                 out[sid].append({"start": s, "mean": mean, "min": lo, "max": hi})
+        return out
+
+    def row_columns(self, ids: Sequence[str], start: float | None = None,
+                    end: float | None = None) -> dict[str, dict[str, np.ndarray]]:
+        """Like rows(), as float columns {"start", "mean", "min", "max"} per id (NaN = missing value).
+        A few MB for years of hourly rows, where row dicts would take ~100 MB."""
+        out = {}
+        dtype = [("start", "f8"), ("mean", "f8"), ("min", "f8"), ("max", "f8")]
+        q = ("SELECT start, IFNULL(mean, ?), IFNULL(min, ?), IFNULL(max, ?) FROM stat_rows "
+             "WHERE statistic_id = ? AND start >= ? AND start < ? ORDER BY start")
+        lo, hi = -np.inf if start is None else float(start), np.inf if end is None else float(end)
+        with closing(self._connect()) as db:
+            for sid in ids:
+                a = np.fromiter(db.execute(q, (_MISSING, _MISSING, _MISSING, sid, lo, hi)), dtype=dtype)
+                cols = {f: a[f].copy() for f in ("start", "mean", "min", "max")}
+                for f in ("mean", "min", "max"):
+                    cols[f][cols[f] == _MISSING] = np.nan
+                out[sid] = cols
         return out
 
     def row_span(self, statistic_id: str) -> tuple[float, float] | None:

@@ -46,7 +46,7 @@ def run(store_path: str, now: float | None = None, log=None) -> dict:
     store = St.Store(store_path)
     system = P.System.from_dict(store.get_meta("system"))
     t0 = time.time()
-    rows = store.rows(system.statistic_ids())
+    rows = store.row_columns(system.statistic_ids())
     frames = P.archive_frames(system, store.responses)
     result = P.train(system, rows, frames, time.time() if now is None else now,
                      previous=store.get_blob("models"), log=log or (lambda _: None))

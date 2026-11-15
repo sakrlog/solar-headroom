@@ -304,15 +304,16 @@ def _mae(pred, truth) -> float:
     return float(np.mean(np.abs(np.asarray(pred) - np.asarray(truth))))
 
 
-def train(system: System, rows: Mapping[str, list], frames: Mapping, now: float, previous: Mapping | None = None,
+def train(system: System, rows: Mapping, frames: Mapping, now: float, previous: Mapping | None = None,
           log: Callable[[str], None] = lambda _: None) -> dict:
     """Train everything on all stored data. previous: the last result (its range table is reused while
     fresh). Returns a JSON-ready dict: models, physics factors, champions, range table, report."""
     t_start = time.process_time()
     cfg = system.model_config()
     hf, pr = frames["hf"], frames["pr"]
-    starts = [r[0]["start"] for r in rows.values() if r]
-    ends = [r[-1]["start"] for r in rows.values() if r]
+    cols = [H.columns(r)["start"] for r in rows.values()]
+    starts = [float(c.min()) for c in cols if len(c)]
+    ends = [float(c.max()) for c in cols if len(c)]
     out: dict = {"version": 1, "trained_at": now, "system": system.to_dict(), "nowcast": None, "daily_d0": None,
                  "daily_d1": None, "factor": DEFAULT_FACTOR, "factor_daily": DEFAULT_FACTOR,
                  "champion": {"nowcast": "physics", "daily": "physics"}, "range": None, "range_at": None,
