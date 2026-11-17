@@ -20,12 +20,14 @@ DEFAULT_AZIMUTH = 180
 
 UPDATE_INTERVAL = timedelta(minutes=5)       # outputs from the newest forecast + today's measurements
 LIVE_MAX_AGE_S = 3600                        # live forecast fetched again after this (+ per-install jitter)
-LIVE_SAT_INTERVAL_S = 900                    # live satellite (x panel groups / 2): with the forecast <= ~300 calls/day
+LIVE_SAT_MIN_GAP_S = 300                     # live satellite: when an interval is needed, at most every 5 min ...
+LIVE_SAT_MAX_GAP_S = 1800                    # ... backing off to 30 min while the feed is late or down
 LIVE_STALE_S = 6 * 3600                      # older than this: status "degraded"
 RETRAIN_AFTER_S = 20 * 3600                  # at startup: train if the last training is older than this
 TRAIN_HOUR = 2                               # nightly training, local time (+ per-install minute)
 TRAIN_TIMEOUT_S = 3600
 STATS_CHUNK_DAYS = 31                        # one recorder query per month of history
+ARCHIVE_WORKERS = 3                          # archive downloads at a time (first learning)
 REQUEST_PAUSE_S = 1.5                        # between Open-Meteo archive requests
 REQUEST_TIMEOUT_S = 120
 

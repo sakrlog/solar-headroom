@@ -46,7 +46,8 @@ HINDSIGHT = F.SKY + F.FC                  # fills throttled / missing hours of p
 HINDSIGHT_SAT = F.SKY + F.SAT_NOW + F.FC  # ... with the satellite of the hour itself
 MIN_SAT_SHARE = 0.3                       # satellite inputs once they cover this share of trainable hours
 LIVE_SAT_WINDOW_S = 3 * 3600              # live satellite request: the last hours
-LIVE_SAT_MAX_AGE_MIN = 90.0               # newest live interval older than this -> forecast-only estimate
+LIVE_SAT_MAX_AGE_MIN = 90.0               # newest live interval older than this: the feed is down (back off)
+LIVE_SAT_LATE_STEPS = 3                   # a late interval: use up to this many older ones before giving up
 PROBE_MAX_AGE_S = 30 * 86400
 PIXEL_STEP = 0.1                          # deg: the grid coordinates are sent on
 PIXEL_DAYS = 180                          # comparison window (hourly values)
@@ -787,13 +788,55 @@ def outputs(system: System, result: Mapping | None, live: Mapping[str, Mapping],
     return out
 
 
+def live_sat_needed(model: str, now: float, period_s: float = 900.0) -> float:
+    """Start of the live interval the current period's lag features use (published ~SAT_LATENCY_S late)."""
+    step = float(W.SATELLITES[model].step_s)
+    start = np.floor(now / period_s) * period_s
+    return float(np.floor((start - F.SAT_LATENCY_S) / step) * step - step)
+
+
+def live_sat_newest(live_sat: tuple[dict, float] | None) -> float | None:
+    """Start of the newest live interval with data (None without any)."""
+    if live_sat is None:
+        return None
+    ts, gti = np.asarray(live_sat[0]["ts"], float), np.asarray(live_sat[0]["gti"], float)
+    ok = ~np.isnan(gti)
+    return float(ts[ok].max()) if ok.any() else None
+
+
+def live_sat_due(system: System, sats: Mapping, live_sat: tuple[dict, float] | None, now: float,
+                 period_s: float = 900.0) -> bool:
+    """Whether the live satellite should be fetched: in daylight, when the frame lacks the interval the
+    current period needs (the caller limits how often)."""
+    model = sats.get("live")
+    if not model:
+        return False
+    need = live_sat_needed(model, now, period_s)
+    if float(S.solar(np.array([need, now]), system.site)["sun_el"].max()) <= 0:
+        return False
+    newest = live_sat_newest(live_sat)
+    return newest is None or newest < need
+
+
 def live_sat_features(result: Mapping, live_sat: tuple[dict, float], starts, period_s: float) -> dict:
-    """Satellite features for periods from the live product, on the history product's scale. The lag
-    features are NaN when the interval they need has not been published (stale feed)."""
+    """Satellite features for periods from the live product, on the history product's scale. When the
+    interval a period needs is late, the newest of the LIVE_SAT_LATE_STEPS older ones stands in; the lag
+    features stay NaN when none of them has been published (stale feed)."""
     sat = result.get("satellite") or {}
     frame, step = live_sat
     maps = sat.get("maps") if sat.get("live") != sat.get("history") else None
-    return F.satellite_features([(F.harmonise(frame, maps) if maps else frame, step)], starts, period_s)
+    src = [(F.harmonise(frame, maps) if maps else frame, step)]
+    starts = np.asarray(starts, float)
+    out = F.satellite_features(src, starts, period_s)
+    for j in range(1, LIVE_SAT_LATE_STEPS + 1):
+        late = np.isnan(out["sat_kgti_lag"])
+        if not late.any():
+            break
+        older = F.satellite_features(src, starts[late] - j * step, period_s)
+        for k in F.SAT_LAG:
+            out[k][late] = older[k]
+        out["sat_lag_min"][late] = older["sat_lag_min"] + j * step / 60.0
+    return out
 
 
 def potential_now(system: System, result: Mapping, models: Mapping, wx: Mapping[str, np.ndarray], now: float,
@@ -831,6 +874,7 @@ def potential_now(system: System, result: Mapping, models: Mapping, wx: Mapping[
 
 
 __all__ = ["System", "Request", "archive_requests", "archive_frames", "best_pixel", "choose_satellites",
-           "live_frames", "live_requests", "live_satellite_requests", "missing", "outputs", "pixel_request",
-           "pixel_score", "pixel_truth", "pixel_window", "pixels_to_try", "probe_ok", "probe_requests", "quarters",
-           "satellite_frame", "satellite_requests", "train", "today_known", "load_models"]
+           "live_frames", "live_requests", "live_sat_due", "live_sat_newest", "live_satellite_requests", "missing",
+           "outputs", "pixel_request", "pixel_score", "pixel_truth", "pixel_window", "pixels_to_try", "probe_ok",
+           "probe_requests", "quarters", "satellite_frame", "satellite_requests", "train", "today_known",
+           "load_models"]

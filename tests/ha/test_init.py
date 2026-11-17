@@ -77,12 +77,17 @@ async def test_learns_from_history(hass, configured, open_meteo, hass_client):
               if "satellite-api" in str(u) and u.query.get("temporal_resolution") == "native"
               and u.query["hourly"] != "shortwave_radiation"]
     assert native and {(u.query["latitude"], u.query["longitude"]) for u in native} == {("45.0", "7.1")}
-    pixels = (await get_diagnostics_for_config_entry(hass, hass_client, entry))["satellite_pixels"]
+    diag0 = await get_diagnostics_for_config_entry(hass, hass_client, entry)
+    pixels = diag0["satellite_pixels"]
+    calls = sum("open-meteo" in str(u) for _, u, _, _ in open_meteo.mock_calls)
+    assert diag0["open_meteo_requests"]["today"]["total"] == calls
+    assert diag0["open_meteo_requests"]["today"]["by_kind"]["pixel"] >= 9
     assert pixels["eumetsat_sarah3"]["scores"]["+0,+1"] > pixels["eumetsat_sarah3"]["scores"]["+0,+0"]
     sat = c.result["satellite"]
     assert sat["used"] and sat["share"] > 0.9 and sat["maps"]["n_pairs"] >= 200
     assert c.result["nowcast_fc"] is not None and "sat_kgti_lag" in c.result["nowcast"]["features"]
-    assert c._live_sat is not None                                         # fetched with the first update
+    await c._async_fetch_live_satellite()                 # (updates fetch it in daylight, when an interval is due)
+    assert c._live_sat is not None
     # yesterday late morning (inside the live forecast): the satellite model with the live feed is close to truth
     noon = (datetime.now(UTC) - timedelta(days=1)).replace(hour=11, minute=7, second=0, microsecond=0).timestamp()
     day = datetime.fromtimestamp(noon, UTC).date().isoformat()
@@ -92,6 +97,14 @@ async def test_learns_from_history(hass, configured, open_meteo, hass_client):
     out = P.outputs(c.system, c.result, c._live, noon, models=c._models, live_sat=live_sat)
     truth = SYSTEM_LOSS * day_k([noon])[0] * clear_sky([noon - 420], period=900)["p_cs"][0]
     assert out["now"]["basis"] == "learned_satellite"
+    assert not P.live_sat_due(c.system, c.sats, live_sat, noon)            # the frame has what noon needs
+    assert not P.live_sat_due(c.system, c.sats, None, noon + 12 * 3600)    # night: nothing to fetch
+    # the interval noon needs is late: the one before it stands in
+    need = P.live_sat_needed("dwd_sis_europe_africa_v4", noon)
+    late = {k: (v[live_sat[0]["ts"] < need] if hasattr(v, "__len__") else v) for k, v in live_sat[0].items()}
+    assert P.live_sat_due(c.system, c.sats, (late, live_sat[1]), noon)
+    out_late = P.outputs(c.system, c.result, c._live, noon, models=c._models, live_sat=(late, live_sat[1]))
+    assert out_late["now"]["basis"] == "learned_satellite"
     assert abs(out["now"]["w"] - truth) < 0.15 * truth, (out["now"], truth)
     # the feed stopped at 11:00: two hours later the forecast-only model takes over
     cut = {k: (v[live_sat[0]["ts"] < noon] if hasattr(v, "__len__") else v) for k, v in live_sat[0].items()}

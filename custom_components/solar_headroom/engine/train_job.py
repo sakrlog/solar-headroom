@@ -33,9 +33,18 @@ def _engine():
 
 
 def peak_rss_mb() -> float | None:
+    """Peak resident memory of this process. Linux: VmHWM of its own address space -- getrusage's
+    ru_maxrss survives exec, so a job started by Home Assistant would report Home Assistant's size."""
+    try:
+        with open("/proc/self/status", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("VmHWM:"):
+                    return round(int(line.split()[1]) / 1024, 1)
+    except OSError:
+        pass
     try:
         import resource
-    except ImportError:          # not on Linux / macOS
+    except ImportError:          # Windows
         return None
     kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return round(kb / (1024 * 1024 if sys.platform == "darwin" else 1024), 1)

@@ -175,3 +175,10 @@ def test_pixel_score_and_window():
     noisy = {"hourly": {"time": body["hourly"]["time"], "global_tilted_irradiance": (k[::-1] * poa).tolist()}}
     assert P.pixel_score(system, truth, noisy)[0] < 0.5
     assert np.isnan(P.pixel_score(system, truth, {"error": True})[0])
+
+
+def test_live_sat_needed_follows_publication_delay():
+    t = 1_794_900_000.0 - 1_794_900_000.0 % 900 + 120          # two minutes into a quarter hour
+    need = P.live_sat_needed("dwd_sis_europe_africa_v4", t)
+    start = t - 120
+    assert need % 600 == 0 and start - 1200 - 1200 < need <= start - 1200 - 600   # ended >= 20 min before

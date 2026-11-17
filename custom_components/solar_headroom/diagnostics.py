@@ -27,5 +27,6 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: SolarHe
         "satellite_choice": c.sats, "satellite_probes": (sat_meta or {}).get("ok"),
         "satellite_pixels": (sat_meta or {}).get("pixels"),          # offsets in 0.1 deg steps, no coordinates
         "forecast_fetched_at": c.live_at, "satellite_fetched_at": c.live_sat_at,
+        "open_meteo_requests": {"today": c.requests, "yesterday": c.requests_yesterday},
         "outputs": {k: data.get(k) for k in ("basis", "now", "today", "tomorrow", "day_after")},
     }
