@@ -33,6 +33,7 @@ import numpy as np
 from . import daily as D
 from . import features as F
 from . import history as H
+from . import live as L
 from . import models as M
 from . import regimes as R
 from . import solar as S
@@ -564,13 +565,16 @@ def sign_checks(system: System, rows: Mapping, t0: float, t1: float) -> dict[str
 
 
 def hours_table(system: System, rows: Mapping[str, list], wx: Mapping[str, np.ndarray], t0: float, t1: float,
-                t_air=None) -> dict[str, np.ndarray]:
-    """Hourly periods [t0, t1): measured roles, sun/clear-sky, labels, nowcast forecast features."""
+                t_air=None, learned: dict | None = None) -> dict[str, np.ndarray]:
+    """Hourly periods [t0, t1): measured roles, sun/clear-sky, labels, nowcast forecast features.
+    learned: filled with the thresholds the labelling learned per segment (engine.regimes.auto_label)."""
     tab = H.period_table(system.history_roles(), rows, t0, t1, int(HOUR))
     sky = F.sky_features(tab["ts"], HOUR, 12, system.site, system.planes,
                          t_air=t_air if t_air is not None else t_air_from(wx), change_points=system.change_points)
     tab.update({k: v for k, v in sky.items() if k != "ts"})
-    lab, _ = label(system, tab)
+    lab, info = label(system, tab)
+    if learned is not None:
+        learned.update(info)
     tab["regime"], tab["reason"] = lab["regime"], lab["reason"]
     _fc_columns(tab, wx)
     return tab
@@ -608,14 +612,17 @@ def train(system: System, rows: Mapping, frames: Mapping, now: float, previous: 
     out: dict = {"version": 1, "trained_at": now, "system": system.to_dict(), "nowcast": None, "nowcast_fc": None,
                  "daily_d0": None, "daily_d1": None, "factor": DEFAULT_FACTOR, "factor_daily": DEFAULT_FACTOR,
                  "champion": {"nowcast": "physics", "daily": "physics"}, "range": None, "range_at": None,
-                 "satellite": None, "report": {}}
+                 "satellite": None, "regime": {}, "report": {}}
     rep = out["report"]
     if not starts:
         rep["status"] = "no_data"
         return out
     t0, t1 = float(min(starts)), float(max(ends)) + HOUR
     t_air = t_air_from(hf)
-    tab = hours_table(system, rows, hf, t0, t1, t_air)
+    learned: dict = {}
+    tab = hours_table(system, rows, hf, t0, t1, t_air, learned)
+    if learned:     # the newest segment's thresholds: what the live estimate uses (engine.live)
+        out["regime"] = {k: v for k, v in learned[max(learned)].items() if k in ("charge_limit_w", "v_full_max")}
     tab.update(M.targets(tab, cfg))
     ts, pv = tab["ts"], tab["pv_w"]
     trainable = tab["trainable"]
@@ -789,8 +796,9 @@ def today_known(system: System, rows5: Mapping[str, list], hour_starts: np.ndarr
 
 def outputs(system: System, result: Mapping | None, live: Mapping[str, Mapping], now: float,
             known_rows5: Mapping[str, list] | None = None, models: Mapping | None = None,
-            live_sat: tuple[dict, float] | None = None) -> dict:
-    """Everything the sensors and the Energy dashboard show, from the newest forecast."""
+            live_sat: tuple[dict, float] | None = None, day_log: L.DayLog | None = None) -> dict:
+    """Everything the sensors and the Energy dashboard show, from the newest forecast. day_log: what the
+    live estimate (engine.live) has counted today; known_rows5: today's 5-minute statistics."""
     result = result or {}
     models = models if models is not None else load_models(result)
     tz = system.time_zone
@@ -823,6 +831,10 @@ def outputs(system: System, result: Mapping | None, live: Mapping[str, Mapping],
     rng = range_table(result)
     m_today = day == d_today
     known = today_known(system, known_rows5, hs[m_today]) if known_rows5 else None
+    if day_log is not None:
+        known = L.merge_known(system.kind, day_log.known(hs[m_today]), known)
+    elif system.kind != "unlimited":
+        known = None            # the statistics show only what was used, not what could have been
     clear_today = clear_by_day.get(d_today, np.nan)
     out["today"] = D.bank_today(hs[m_today], np.nan_to_num(pred[m_today]), now, clear_today, rng, known)
     out["today"]["clearness"] = None if np.isnan(clear_today) else round(float(clear_today), 3)
@@ -837,6 +849,13 @@ def outputs(system: System, result: Mapping | None, live: Mapping[str, Mapping],
     out["hourly"] = {float(t): round(float(w), 1) for t, w in zip(hs, pred, strict=True) if not np.isnan(w)}
     out["now"] = potential_now(system, result, models, live["best_match"], now, t_air, live_sat=live_sat)
     return out
+
+
+def clear_sky_now(system: System, now: float, t_air=None) -> float:
+    """Clear-sky power of the panels (W) in the current minute."""
+    start = np.floor(now / 60.0) * 60.0
+    tab = F.sky_features([start], 60.0, 2, system.site, system.planes, t_air=t_air, change_points=system.change_points)
+    return float(tab["p_cs"][0])
 
 
 def live_sat_needed(model: str, now: float, period_s: float = 900.0) -> float:
@@ -925,7 +944,7 @@ def potential_now(system: System, result: Mapping, models: Mapping, wx: Mapping[
 
 
 __all__ = ["System", "Request", "archive_requests", "archive_frames", "best_pixel", "choose_satellites",
-           "live_frames", "live_requests", "live_sat_due", "live_sat_newest", "live_satellite_requests", "missing",
-           "outputs", "pixel_request", "pixel_score", "pixel_truth", "pixel_window", "pixels_to_try", "probe_ok",
-           "probe_requests", "quarters", "satellite_frame", "satellite_requests", "sign_checks", "train", "today_known",
-           "load_models"]
+           "clear_sky_now", "live_frames", "live_requests", "live_sat_due", "live_sat_newest",
+           "live_satellite_requests", "missing", "outputs", "pixel_request", "pixel_score", "pixel_truth",
+           "pixel_window", "pixels_to_try", "probe_ok", "probe_requests", "quarters", "satellite_frame",
+           "satellite_requests", "sign_checks", "train", "today_known", "load_models"]

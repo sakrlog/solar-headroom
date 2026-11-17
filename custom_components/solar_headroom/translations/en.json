@@ -194,6 +194,12 @@
           "ready": "Ready",
           "degraded": "Degraded"
         }
+      },
+      "untapped_now": {
+        "name": "Untapped solar"
+      },
+      "wasted_today": {
+        "name": "Solar wasted today"
       }
     },
     "button": {

@@ -32,6 +32,8 @@ async def _async_update_listener(hass: HomeAssistant, entry: SolarHeadroomConfig
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: SolarHeadroomConfigEntry) -> bool:
+    if (tracker := entry.runtime_data.tracker) is not None:
+        await tracker.async_stop()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 

@@ -59,6 +59,7 @@ from .engine import history as H
 from .engine import pipeline as P
 from .engine import solar as S
 from .engine.store import Store
+from .live import LiveTracker
 
 type SolarHeadroomConfigEntry = ConfigEntry[SolarHeadroomCoordinator]
 
@@ -138,6 +139,8 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._learning: asyncio.Task | None = None
         self.requests: dict = {"day": None, "total": 0, "by_kind": {}}
         self.requests_yesterday: dict | None = None
+        self.tracker: LiveTracker | None = None
+        self._t_air: Any = 20.0
 
     # ------------------------------------------------------------ setup
     async def async_setup(self) -> None:
@@ -151,6 +154,9 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ready = (self.last_report or {}).get("status") == "ready"
             self.status = STATUS_READY if ready else STATUS_COLLECTING
         entry = self.config_entry
+        self.tracker = LiveTracker(self.hass, entry.entry_id, self.system, entry_conf(entry),
+                                   (self.result or {}).get("regime"))
+        await self.tracker.async_start(entry)
         entry.async_on_unload(async_at_started(self.hass, self._async_started))
         entry.async_on_unload(async_track_time_change(self.hass, self._async_nightly, hour=TRAIN_HOUR,
                                                       minute=self.train_minute, second=0))
@@ -190,8 +196,13 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._live_sat_wanted(now):
             await self._async_fetch_live_satellite()
         rows5 = await self._async_today_rows()
+        log = self.tracker.day_log_copy() if self.tracker else None
         data = await self.hass.async_add_executor_job(P.outputs, self.system, self.result, self._live, now, rows5,
-                                                      self._models, self._live_sat)
+                                                      self._models, self._live_sat, log)
+        if self.tracker is not None:
+            sky = data.get("now") or {}
+            cs = sky.get("clear_sky_w") or 0.0
+            self.tracker.set_sky(sky["w"] / cs if cs > 1 and sky.get("w") is not None else None, self._t_air)
         if now - self.live_at > LIVE_STALE_S and not self.learning:
             self.status = STATUS_DEGRADED
         return data
@@ -207,6 +218,7 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     raise
                 LOGGER.debug("ensemble forecast skipped: %s", err)    # the spread is optional
         self._live = await self.hass.async_add_executor_job(P.live_frames, self.system, bodies)
+        self._t_air = await self.hass.async_add_executor_job(P.t_air_from, self._live.get("best_match") or {})
         self.live_at = time.time()
         if self.status == STATUS_DEGRADED and self.last_error and self.last_error.startswith("forecast"):
             self.status = STATUS_READY if self.result else STATUS_COLLECTING
@@ -284,6 +296,8 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.last_report = await self._async_train()
             self.result = await self.hass.async_add_executor_job(self.store.get_blob, "models")
             self._models = await self.hass.async_add_executor_job(P.load_models, self.result)
+            if self.tracker is not None:
+                self.tracker.set_learned((self.result or {}).get("regime"))
             self.status = STATUS_READY if self.last_report.get("status") == "ready" else STATUS_COLLECTING
             self.last_error = None
             LOGGER.info("Solar Headroom trained: %s", json.dumps(self.last_report))

@@ -1,6 +1,7 @@
 """Diagnostics: learning state and recent accuracy, without the location."""
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -29,4 +30,14 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: SolarHe
         "forecast_fetched_at": c.live_at, "satellite_fetched_at": c.live_sat_at,
         "open_meteo_requests": {"today": c.requests, "yesterday": c.requests_yesterday},
         "outputs": {k: data.get(k) for k in ("basis", "now", "today", "tomorrow", "day_after")},
+        "live": _live(c),
     }
+
+
+def _live(c) -> dict | None:
+    t = c.tracker
+    if t is None:
+        return None
+    return {"now": t.now, "rules": asdict(t.estimator.cfg), "last_full": t.estimator.last_full,
+            "sky_k": t.k_sky, "wasted_today_kwh": round(t.wasted_today_kwh(), 3),
+            "log_covered_h": round(sum(v[0] for v in t.day_log.buckets.values()) / 3600.0, 2)}
