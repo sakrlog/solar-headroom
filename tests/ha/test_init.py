@@ -4,7 +4,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
+import numpy as np
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.components.diagnostics import get_diagnostics_for_config_entry
 from pytest_homeassistant_custom_component.components.recorder.common import async_wait_recording_done
@@ -18,7 +20,22 @@ from custom_components.solar_headroom import energy
 from custom_components.solar_headroom.const import DOMAIN
 from custom_components.solar_headroom.engine import pipeline as P
 
-from .conftest import AZIMUTH, KWP, PV_ID, SYSTEM_LOSS, TILT, clear_sky, day_k, open_meteo_body, pv_rows
+from .conftest import (
+    AZIMUTH,
+    BAT_ID,
+    KWP,
+    PV_ID,
+    SOC_ID,
+    SYSTEM_LOSS,
+    TILT,
+    clear_sky,
+    day_k,
+    offgrid_rows,
+    open_meteo_body,
+    potential_w,
+    pv_rows,
+    statistics_meta,
+)
 
 HISTORY_DAYS = 90
 
@@ -160,3 +177,41 @@ async def test_physics_until_there_is_data(hass, configured, open_meteo):
     assert float(tomorrow.state) > 0 and tomorrow.attributes["basis"] == "physics"
     assert _state(hass, "potential_now").state not in ("unknown", "unavailable")
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_off_grid_learns_the_potential_not_the_throttled_output(hass, configured, open_meteo):
+    """A full battery makes the inverter hold the panels back to the house load: those hours are floors.
+    Learned as a grid-tied system the forecast copies the throttled output; told it is off-grid, it
+    forecasts what the panels can give."""
+    end = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+    rows = offgrid_rows(end - timedelta(days=HISTORY_DAYS), end)
+    for sid, rs in rows.items():
+        async_import_statistics(hass, statistics_meta(sid), rs)
+    await async_wait_recording_done(hass)
+    entry = MockConfigEntry(domain=DOMAIN, unique_id=PV_ID, title="Solar Headroom",
+                            data={"pv_power": [PV_ID], "kind": "off_grid", "battery_power": BAT_ID,
+                                  "battery_power_inverted": False, "battery_soc": SOC_ID},
+                            subentries_data=[{"subentry_type": "plane", "title": "roof", "unique_id": None,
+                                              "data": {"kwp": KWP, "tilt": TILT, "azimuth": AZIMUTH}}])
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    c = entry.runtime_data
+    await c._learning
+    await hass.async_block_till_done()
+    assert c.last_error is None, c.last_error
+    rep = c.result["report"]
+    assert rep["throttled_hours"] > 50 and rep["full_output_hours"] > 200, rep
+
+    # tomorrow: the truth is the potential; the throttled output is what a naive learner would copy
+    tz = ZoneInfo(hass.config.time_zone)
+    t0 = datetime.combine(datetime.now(tz).date() + timedelta(days=1), datetime.min.time(), tz).timestamp()
+    hours = np.arange(t0, t0 + 86400, 3600.0)
+    truth_kwh = float(potential_w(hours).sum()) / 1000.0
+    pv = np.array([r["mean"] for r in rows[PV_ID]])
+    pot = potential_w([r["start"].timestamp() for r in rows[PV_ID]])
+    used_share = pv.sum() / pot.sum()                                  # 0.85 of the potential was used
+    # over the past days: the share of the potential that was used (a grid-tied learner would say ~1.0)
+    assert abs(rep["used_share"] - used_share) < 0.05, (rep["used_share"], used_share)
+    got = c.data["tomorrow"]["kwh"]
+    assert abs(got - truth_kwh) < 0.12 * truth_kwh, (got, truth_kwh, c.result["champion"])

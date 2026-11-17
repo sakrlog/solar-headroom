@@ -17,7 +17,7 @@ import aiohttp
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfPower
+from homeassistant.const import UnitOfElectricPotential, UnitOfPower
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_change
@@ -28,11 +28,13 @@ from homeassistant.util import dt as dt_util
 from .const import (
     ARCHIVE_WORKERS,
     CONF_AZIMUTH,
+    CONF_EXPORT_LIMIT,
     CONF_KIND,
     CONF_KWP,
     CONF_PV_POWER,
     CONF_TILT,
     DOMAIN,
+    KIND_UNLIMITED,
     LIVE_MAX_AGE_S,
     LIVE_SAT_MAX_GAP_S,
     LIVE_SAT_MIN_GAP_S,
@@ -41,6 +43,7 @@ from .const import (
     REQUEST_PAUSE_S,
     REQUEST_TIMEOUT_S,
     RETRAIN_AFTER_S,
+    SENSOR_ROLES,
     STATS_CHUNK_DAYS,
     STATUS_COLLECTING,
     STATUS_DEGRADED,
@@ -61,7 +64,7 @@ type SolarHeadroomConfigEntry = ConfigEntry[SolarHeadroomCoordinator]
 
 TRAIN_JOB = Path(__file__).parent / "engine" / "train_job.py"
 STAT_TYPES: set = {"mean", "min", "max"}
-UNITS = {"power": UnitOfPower.WATT}
+UNITS = {"power": UnitOfPower.WATT, "voltage": UnitOfElectricPotential.VOLT}
 
 
 class OpenMeteoError(Exception):
@@ -72,13 +75,30 @@ class TrainingError(Exception):
     """The training process failed."""
 
 
+def roles_from_conf(conf: dict) -> dict[str, list[list[dict]]]:
+    """Configured sensors -> engine roles: PV sensors are added up; battery and grid power carry their
+    sign (Home Assistant's convention: battery + = discharging, grid + = importing; inverted flips it)."""
+    roles = {"pv_w": [[{"statistic_id": eid}] for eid in conf[CONF_PV_POWER]]}
+    if conf.get(CONF_KIND, KIND_UNLIMITED) == KIND_UNLIMITED:
+        return roles
+    for key, (role, inverted) in SENSOR_ROLES.items():
+        if conf.get(key):
+            roles[role] = [[{"statistic_id": conf[key], "scale": -1.0 if inverted and conf.get(inverted) else 1.0}]]
+    return roles
+
+
+def entry_conf(entry: ConfigEntry) -> dict:
+    """The entry's settings: the options once saved by the options flow (complete), else the setup data."""
+    return dict(entry.options) if entry.options.get(CONF_KIND) else {**entry.data, **entry.options}
+
+
 def system_from_entry(hass: HomeAssistant, entry: ConfigEntry) -> P.System:
-    conf = {**entry.data, **entry.options}
+    conf = entry_conf(entry)
     planes = tuple(S.Plane(float(s.data[CONF_TILT]), float(s.data[CONF_AZIMUTH]), float(s.data[CONF_KWP]))
                    for s in entry.get_subentries_of_type(SUBENTRY_TYPE_PLANE))
-    roles = {"pv_w": [[{"statistic_id": eid}] for eid in conf[CONF_PV_POWER]]}
     return P.System(float(hass.config.latitude), float(hass.config.longitude), float(hass.config.elevation or 0.0),
-                    str(hass.config.time_zone), planes, roles, conf.get(CONF_KIND, "unlimited"))
+                    str(hass.config.time_zone), planes, roles_from_conf(conf), conf.get(CONF_KIND, KIND_UNLIMITED),
+                    export_limit_w=float(conf.get(CONF_EXPORT_LIMIT) or 0.0))
 
 
 def _plain(rows: dict[str, list]) -> dict[str, list[dict]]:

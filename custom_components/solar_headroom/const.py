@@ -8,7 +8,22 @@ DOMAIN = "solar_headroom"
 LOGGER = logging.getLogger(__package__)
 
 CONF_PV_POWER = "pv_power"
-CONF_KIND = "kind"
+CONF_KIND = "kind"                           # does the inverter hold back? see KINDS
+CONF_EXPORT_LIMIT = "export_limit_w"
+CONF_BATTERY_POWER = "battery_power"
+CONF_BATTERY_INVERTED = "battery_power_inverted"
+CONF_BATTERY_SOC = "battery_soc"
+CONF_GRID_POWER = "grid_power"
+CONF_GRID_INVERTED = "grid_power_inverted"
+CONF_GRID_VOLTAGE = "grid_voltage"
+CONF_GENERATOR_POWER = "generator_power"
+CONF_PV_VOLTAGE = "pv_voltage"
+KIND_UNLIMITED, KIND_EXPORT_LIMITED, KIND_OFF_GRID = "unlimited", "export_limited", "off_grid"
+KINDS = [KIND_UNLIMITED, KIND_EXPORT_LIMITED, KIND_OFF_GRID]
+# optional sensors -> engine roles (engine.history); inverted flags flip the sign
+SENSOR_ROLES = {CONF_BATTERY_POWER: ("bat_w", CONF_BATTERY_INVERTED), CONF_BATTERY_SOC: ("soc", None),
+                CONF_GRID_POWER: ("grid_w", CONF_GRID_INVERTED), CONF_GRID_VOLTAGE: ("grid_v", None),
+                CONF_GENERATOR_POWER: ("gen_w", None), CONF_PV_VOLTAGE: ("pv_v", None)}
 CONF_KWP = "kwp"
 CONF_TILT = "tilt"
 CONF_AZIMUTH = "azimuth"

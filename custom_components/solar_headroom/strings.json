@@ -27,15 +27,50 @@
       },
       "history": {
         "title": "History found",
-        "description": "Found {history} of history for your solar sensor. After you finish, Solar Headroom reads it together with weather archives from Open-Meteo and learns your system in the background (a few minutes). Until then the forecast uses physics only.\n\nOnly your location rounded to ~10 km and the panel direction and tilt are sent to Open-Meteo. No account, no key."
+        "description": "Found {history} of history for your solar sensor.\n{signs}\n\nAfter you finish, Solar Headroom reads it together with weather archives from Open-Meteo and learns your system in the background (a few minutes). Until then the forecast uses physics only.\n\nOnly your location rounded to ~10 km and the panel direction and tilt are sent to Open-Meteo. No account, no key."
       },
       "no_history": {
         "title": "No history yet",
         "description": "Home Assistant has no long-term statistics for this sensor yet (it needs `state_class: measurement`). Solar Headroom starts with a physics forecast and learns as data comes in; most systems are learned within a few weeks.\n\nOnly your location rounded to ~10 km and the panel direction and tilt are sent to Open-Meteo. No account, no key."
+      },
+      "holdback": {
+        "title": "Does your inverter ever hold back solar power?",
+        "description": "Inverters throttle the panels when the power has nowhere to go: the battery is full and the house needs little (off-grid), or the grid may not take more (export limit, zero export). Solar Headroom then estimates what the panels could have given instead of learning \"low\".",
+        "data": {
+          "kind": "Your system",
+          "export_limit_w": "Export limit"
+        },
+        "data_description": {
+          "kind": "Pick the closest. Grid-tied systems that export freely never hold back.",
+          "export_limit_w": "Only for an export limit: the most the grid may take, in W. 0 = zero export."
+        }
+      },
+      "sensors": {
+        "title": "Battery and grid sensors",
+        "description": "These tell Solar Headroom when the panels were giving all they could. Pre-filled from the Energy dashboard where set up. Use power sensors with history (state_class: measurement).",
+        "data": {
+          "battery_power": "Battery power",
+          "battery_power_inverted": "Battery power sensor is positive while charging",
+          "battery_soc": "Battery state of charge",
+          "grid_power": "Grid power",
+          "grid_power_inverted": "Grid power sensor is positive while exporting",
+          "grid_voltage": "Grid voltage",
+          "generator_power": "Generator power",
+          "pv_voltage": "PV (string) voltage"
+        },
+        "data_description": {
+          "battery_power": "Home Assistant's convention: positive = discharging, negative = charging. Tick the box below if yours is the other way round; the history is checked too.",
+          "battery_soc": "Optional but recommended: when the battery is not full, it takes all the panels offer.",
+          "grid_power": "Positive = from the grid, negative = to the grid.",
+          "grid_voltage": "Optional, off-grid with an occasional grid: tells when the grid is there.",
+          "generator_power": "Optional: tells when a generator is running.",
+          "pv_voltage": "Optional: a throttled string runs at a higher voltage; Solar Headroom learns your normal band."
+        }
       }
     },
     "error": {
-      "no_sensor": "Pick at least one sensor."
+      "no_sensor": "Pick at least one sensor.",
+      "required": "This sensor is needed for the kind of system you picked."
     },
     "abort": {
       "already_configured": "These sensors are already set up."
@@ -48,11 +83,50 @@
         "data": {
           "pv_power": "Solar power sensor(s)"
         },
-        "description": "Change the solar power sensor(s). The models are retrained afterwards."
+        "description": "Change the solar power sensor(s); the next steps cover whether your inverter holds back and the battery / grid sensors. The models are retrained afterwards."
+      },
+      "holdback": {
+        "title": "Does your inverter ever hold back solar power?",
+        "description": "Inverters throttle the panels when the power has nowhere to go: the battery is full and the house needs little (off-grid), or the grid may not take more (export limit, zero export). Solar Headroom then estimates what the panels could have given instead of learning \"low\".",
+        "data": {
+          "kind": "Your system",
+          "export_limit_w": "Export limit"
+        },
+        "data_description": {
+          "kind": "Pick the closest. Grid-tied systems that export freely never hold back.",
+          "export_limit_w": "Only for an export limit: the most the grid may take, in W. 0 = zero export."
+        }
+      },
+      "sensors": {
+        "title": "Battery and grid sensors",
+        "description": "These tell Solar Headroom when the panels were giving all they could. Pre-filled from the Energy dashboard where set up. Use power sensors with history (state_class: measurement).",
+        "data": {
+          "battery_power": "Battery power",
+          "battery_power_inverted": "Battery power sensor is positive while charging",
+          "battery_soc": "Battery state of charge",
+          "grid_power": "Grid power",
+          "grid_power_inverted": "Grid power sensor is positive while exporting",
+          "grid_voltage": "Grid voltage",
+          "generator_power": "Generator power",
+          "pv_voltage": "PV (string) voltage"
+        },
+        "data_description": {
+          "battery_power": "Home Assistant's convention: positive = discharging, negative = charging. Tick the box below if yours is the other way round; the history is checked too.",
+          "battery_soc": "Optional but recommended: when the battery is not full, it takes all the panels offer.",
+          "grid_power": "Positive = from the grid, negative = to the grid.",
+          "grid_voltage": "Optional, off-grid with an occasional grid: tells when the grid is there.",
+          "generator_power": "Optional: tells when a generator is running.",
+          "pv_voltage": "Optional: a throttled string runs at a higher voltage; Solar Headroom learns your normal band."
+        }
+      },
+      "signs": {
+        "title": "Sign check",
+        "description": "Checked against the last weeks of history:\n{signs}"
       }
     },
     "error": {
-      "no_sensor": "Pick at least one sensor."
+      "no_sensor": "Pick at least one sensor.",
+      "required": "This sensor is needed for the kind of system you picked."
     }
   },
   "config_subentries": {
@@ -131,6 +205,15 @@
   "exceptions": {
     "no_plane": {
       "message": "No panel group configured; add one to use Solar Headroom."
+    }
+  },
+  "selector": {
+    "kind": {
+      "options": {
+        "unlimited": "Never: grid-tied, exports freely",
+        "export_limited": "Export limit or zero export",
+        "off_grid": "Off-grid with a battery (grid or generator only as backup)"
+      }
     }
   }
 }

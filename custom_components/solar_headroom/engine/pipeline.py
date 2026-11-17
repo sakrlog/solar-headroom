@@ -81,7 +81,8 @@ class System:
     """One PV system as the integration knows it (JSON round-trip with to_dict / from_dict).
 
     roles: role -> parts -> sources, each {"statistic_id", "scale"=1, "since"=None, "until"=None}
-    (engine.history). Phase 1 uses "pv_w"; battery, grid and voltage roles feed the throttling rules."""
+    (engine.history): "pv_w" always; "bat_w" (+ = discharging), "soc", "grid_w" (+ = importing), "grid_v",
+    "gen_w", "pv_v" feed the throttling rules (engine.regimes) of kind "export_limited" / "off_grid"."""
     latitude: float
     longitude: float
     altitude: float
@@ -90,6 +91,7 @@ class System:
     roles: Mapping[str, Sequence[Sequence[Mapping]]]
     kind: str = "unlimited"
     change_points: tuple[float, ...] = ()
+    export_limit_w: float = 0.0                  # export_limited: 0 = zero export
 
     @property
     def kwp(self) -> float:
@@ -111,6 +113,7 @@ class System:
     def to_dict(self) -> dict:
         return {"latitude": self.latitude, "longitude": self.longitude, "altitude": self.altitude,
                 "time_zone": self.time_zone, "kind": self.kind, "change_points": list(self.change_points),
+                "export_limit_w": self.export_limit_w,
                 "planes": [{"tilt": p.tilt, "azimuth": p.azimuth, "kwp": p.kwp} for p in self.planes],
                 "roles": {r: [[dict(s) for s in part] for part in parts] for r, parts in self.roles.items()}}
 
@@ -119,7 +122,8 @@ class System:
         return cls(float(d["latitude"]), float(d["longitude"]), float(d.get("altitude", 0.0)), d["time_zone"],
                    tuple(S.Plane(float(p["tilt"]), float(p["azimuth"]), float(p["kwp"])) for p in d["planes"]),
                    {r: [[dict(s) for s in part] for part in parts] for r, parts in d["roles"].items()},
-                   d.get("kind", "unlimited"), tuple(float(t) for t in d.get("change_points", ())))
+                   d.get("kind", "unlimited"), tuple(float(t) for t in d.get("change_points", ())),
+                   float(d.get("export_limit_w", 0.0)))
 
 
 def local_date(ts: float, tz: str) -> date:
@@ -511,10 +515,52 @@ def _fc_columns(table: dict, wx: Mapping[str, np.ndarray]) -> None:
 def label(system: System, table: Mapping[str, np.ndarray]) -> tuple[dict[str, np.ndarray], dict]:
     stats = {k: np.asarray(v) for k, v in table.items() if k.split("_")[0] in ("pv", "soc", "bat", "grid", "gen",
                                                                              "curtail")}
-    cfg = R.RegimeConfig(kind=system.kind)
+    cfg = R.RegimeConfig(kind=system.kind, export_limit_w=system.export_limit_w)
     if system.kind == "unlimited":
         return R.label(stats, cfg, sun_el=table["sun_el"]), {}
     return R.auto_label(stats, cfg, segment=table["segment"], sun_el=table["sun_el"])
+
+
+SIGN_MIN_HOURS = 48
+SIGN_MIN_CORR = 0.3
+
+
+def _corr(a: np.ndarray, b: np.ndarray) -> tuple[float, int]:
+    m = ~np.isnan(a) & ~np.isnan(b)
+    n = int(m.sum())
+    if n < SIGN_MIN_HOURS or np.std(a[m]) == 0 or np.std(b[m]) == 0:
+        return float("nan"), n
+    return float(np.corrcoef(a[m], b[m])[0, 1]), n
+
+
+def sign_checks(system: System, rows: Mapping, t0: float, t1: float) -> dict[str, dict]:
+    """Whether battery and grid power follow Home Assistant's signs (battery + = discharging, grid + =
+    importing) as configured (the roles' scales applied), from hourly statistics:
+    battery -- discharging must lower the state of charge (power against the change of charge);
+    grid -- more solar must mean less import (power against PV in daylight); off-grid sites, which
+    rarely export, by the direction that dominates. {"bat_w"|"grid_w": {"ok": True | False (reversed) |
+    None (cannot tell), "score", "hours"}}"""
+    tab = H.period_table(system.history_roles(), rows, t0, t1, int(HOUR))
+    out: dict[str, dict] = {}
+    if "bat_w" in tab and "soc" in tab:
+        bat, soc = tab["bat_w"], tab["soc"]
+        flow = (bat[:-1] + bat[1:]) / 2.0                  # between the centres of two hours
+        c, n = _corr(flow, np.diff(soc))
+        ok = None if np.isnan(c) or abs(c) < SIGN_MIN_CORR else bool(c < 0)
+        out["bat_w"] = {"ok": ok, "score": None if np.isnan(c) else round(c, 3), "hours": n}
+    if "grid_w" in tab:
+        grid, pv = tab["grid_w"], tab.get("pv_w")
+        if system.kind == "off_grid" or pv is None:
+            g = grid[~np.isnan(grid) & (np.abs(grid) > 50)]
+            share = float(np.mean(g > 0)) if len(g) >= SIGN_MIN_HOURS else float("nan")
+            ok = None if np.isnan(share) or 0.2 < share < 0.8 else bool(share >= 0.8)
+            out["grid_w"] = {"ok": ok, "score": None if np.isnan(share) else round(share, 3), "hours": int(len(g))}
+        else:
+            day = pv > 50
+            c, n = _corr(np.where(day, pv, np.nan), np.where(day, grid, np.nan))
+            ok = None if np.isnan(c) or abs(c) < SIGN_MIN_CORR else bool(c < 0)
+            out["grid_w"] = {"ok": ok, "score": None if np.isnan(c) else round(c, 3), "hours": n}
+    return out
 
 
 def hours_table(system: System, rows: Mapping[str, list], wx: Mapping[str, np.ndarray], t0: float, t1: float,
@@ -637,6 +683,11 @@ def train(system: System, rows: Mapping, frames: Mapping, now: float, previous: 
         dt = D.day_table(g)
         rep["days"] = int(len(dt["day"]))
         rep["complete_days"] = int(dt["complete"].sum())
+        # how much of what the panels could give was used (complete days; 1.0 = never held back)
+        for name, sel in (("used_share", dt["complete"]),
+                          ("used_share_30d", dt["complete"] & (dt["day"] >= dt["day"].max() - 30))):
+            if sel.any() and dt["e_pot"][sel].sum() > 0:
+                rep[name] = round(float(dt["e_pv"][sel].sum() / dt["e_pot"][sel].sum()), 3)
         if pr[1].get("best_match") is not None and len(pr[1]["best_match"]["ts"]):
             daily = _train_daily(system, g, dt, pr, cfg, now, previous, t_air, rep)
             out["champion"]["daily"] = daily.pop("champion_daily", "physics")
@@ -876,5 +927,5 @@ def potential_now(system: System, result: Mapping, models: Mapping, wx: Mapping[
 __all__ = ["System", "Request", "archive_requests", "archive_frames", "best_pixel", "choose_satellites",
            "live_frames", "live_requests", "live_sat_due", "live_sat_newest", "live_satellite_requests", "missing",
            "outputs", "pixel_request", "pixel_score", "pixel_truth", "pixel_window", "pixels_to_try", "probe_ok",
-           "probe_requests", "quarters", "satellite_frame", "satellite_requests", "train", "today_known",
+           "probe_requests", "quarters", "satellite_frame", "satellite_requests", "sign_checks", "train", "today_known",
            "load_models"]

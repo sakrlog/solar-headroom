@@ -5,7 +5,8 @@ while the inverter is holding back (battery full, zero export, export limit, del
 curtailment), and learns your system from Home Assistant's own history.
 
 Status: **early development.** The forecast side works (learning from history, satellite real-time
-estimate, Energy dashboard forecast); throttling-aware learning and the live estimate are next.
+estimate, Energy dashboard forecast), and so does throttling-aware learning for off-grid and
+export-limited systems; the live estimate while throttled is next.
 
 ## Installation (HACS, custom repository)
 
@@ -14,7 +15,10 @@ Requires Home Assistant 2026.10 or newer and the recorder (on by default).
 1. HACS -> three-dot menu -> *Custom repositories* -> add `https://github.com/sakrlog/solar-headroom`,
    type *Integration*; install *Solar Headroom* and restart Home Assistant.
 2. *Settings -> Devices & services -> Add integration -> Solar Headroom*: pick your solar power
-   sensor(s) (pre-filled from the Energy dashboard), enter the panels' kWp, tilt and direction.
+   sensor(s) (pre-filled from the Energy dashboard), enter the panels' kWp, tilt and direction, and
+   say whether your inverter ever holds back (never / export limit or zero export / off-grid). If it
+   does, pick the battery and grid sensors that show when the panels were giving all they could
+   (pre-filled from the Energy dashboard too; their signs are checked against the history).
 3. Forecasts appear within seconds; the learned models follow once the history and weather archives
    are read (minutes). Add the forecast to the Energy dashboard under *Solar production*.
 

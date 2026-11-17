@@ -55,11 +55,55 @@ def clear_sky(starts, tilt: float = TILT, azimuth: float = AZIMUTH, kwp: float =
 def pv_rows(first: datetime, last: datetime) -> list[dict]:
     """Hourly statistics rows of the fake PV sensor (W), as the recorder stores them."""
     starts = np.arange(first.timestamp(), last.timestamp(), 3600.0)
-    sky = clear_sky(starts)
-    shade = np.where(sky["hour"] >= 14.5, 0.4, 1.0)     # a tree in the afternoon: physics cannot know it
-    p = SYSTEM_LOSS * day_k(starts) * sky["p_cs"] * shade
+    p = potential_w(starts)                              # with a tree in the afternoon: physics cannot know it
     return [{"start": datetime.fromtimestamp(t, UTC), "mean": float(w), "min": float(0.6 * w), "max": float(1.2 * w)}
             for t, w in zip(starts, p, strict=True)]
+
+
+BAT_ID, SOC_ID = "sensor.battery_power", "sensor.battery_soc"
+BAT_KWH, BAT_LIMIT_W = 10.0, 3000.0
+
+
+def potential_w(starts) -> np.ndarray:
+    """What the fake roof can give per hour (W): the truth behind both fake sites."""
+    starts = np.asarray(starts, float)
+    sky = clear_sky(starts)
+    return SYSTEM_LOSS * day_k(starts) * sky["p_cs"] * np.where(sky["hour"] >= 14.5, 0.4, 1.0)
+
+
+def offgrid_rows(first: datetime, last: datetime) -> dict[str, list[dict]]:
+    """Hourly statistics of a fake off-grid site: a 10 kWh battery and a house load; once the battery is
+    full the inverter holds the panels back to what the house uses (PV = load), so PV under-reads its
+    potential. Battery power + = discharging (Home Assistant's convention)."""
+    starts = np.arange(first.timestamp(), last.timestamp(), 3600.0)
+    pot = potential_w(starts)
+    hour = clear_sky(starts)["hour"]
+    load = 350.0 + np.where((hour >= 17) & (hour < 23), 900.0, 0.0) + np.where((hour >= 7) & (hour < 9), 500.0, 0.0)
+    soc, rows = 50.0, {PV_ID: [], BAT_ID: [], SOC_ID: []}
+    for t, p, ld in zip(starts, pot, load, strict=True):
+        room_w = (100.0 - soc) / 100.0 * BAT_KWH * 1000.0
+        if p >= ld:
+            charge = min(p - ld, BAT_LIMIT_W, room_w)
+            pv, bat = ld + charge, -charge
+        else:
+            discharge = min(ld - p, soc / 100.0 * BAT_KWH * 1000.0)
+            pv, bat = p, discharge
+        soc_new = float(np.clip(soc - bat / (BAT_KWH * 10.0), 0.0, 100.0))
+        when = datetime.fromtimestamp(t, UTC)
+        rows[PV_ID].append({"start": when, "mean": float(pv), "min": float(0.8 * pv), "max": float(1.1 * pv)})
+        rows[BAT_ID].append({"start": when, "mean": float(bat), "min": float(bat - 0.1 * abs(bat) - 5),
+                             "max": float(bat + 0.1 * abs(bat) + 5)})
+        rows[SOC_ID].append({"start": when, "mean": (soc + soc_new) / 2, "min": min(soc, soc_new),
+                             "max": max(soc, soc_new)})
+        soc = soc_new
+    return rows
+
+
+def statistics_meta(statistic_id: str) -> dict:
+    from homeassistant.components.recorder.models import StatisticMeanType
+    unit, unit_class = ("%", None) if statistic_id == SOC_ID else ("W", "power")
+    return {"source": "recorder", "statistic_id": statistic_id, "unit_of_measurement": unit,
+            "unit_class": unit_class, "mean_type": StatisticMeanType.ARITHMETIC, "has_sum": False, "name": None}
 
 
 def _step(q: dict) -> float:
