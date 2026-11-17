@@ -1,6 +1,7 @@
 """What the integration does with the engine, without Home Assistant.
 
   probe_requests    which satellite products have data at the site (once a month)
+  pixels_to_try     which neighbouring satellite pixels to compare with the PV (hill climb, once a year)
   archive_requests  which Open-Meteo archive chunks a system needs (calendar quarters, per panel group)
   train             stored statistics + archives -> nowcast and daily models, physics factors, report
   outputs           models + the live forecast + today's measurements -> what the sensors show
@@ -13,6 +14,11 @@ Satellite: the product with the longest archive at the site trains the models ("
 in Europe/Africa); the fastest live product feeds the real-time estimate ("live", e.g. DWD every 10 min),
 mapped onto the history product's scale with quantile maps fitted where both overlap. Without a fresh
 live satellite the real-time estimate falls back to a forecast-only model.
+
+Each product is read at the pixel that best matches the PV: a geostationary satellite sees clouds
+displaced away from it (parallax), and products are gridded differently, so the site's own grid point
+is often not the best one (on the reference site 0.1-0.2 deg east: hourly error 475 -> ~330 W).
+Pixels are 0.1 deg grid points, kept as offsets in steps from the site's own point.
 """
 from __future__ import annotations
 
@@ -42,6 +48,15 @@ MIN_SAT_SHARE = 0.3                       # satellite inputs once they cover thi
 LIVE_SAT_WINDOW_S = 3 * 3600              # live satellite request: the last hours
 LIVE_SAT_MAX_AGE_MIN = 90.0               # newest live interval older than this -> forecast-only estimate
 PROBE_MAX_AGE_S = 30 * 86400
+PIXEL_STEP = 0.1                          # deg: the grid coordinates are sent on
+PIXEL_DAYS = 180                          # comparison window (hourly values)
+PIXEL_MIN_DAYS = 21
+PIXEL_MIN_HOURS = 100                     # full-output daylight hours needed to compare pixels
+PIXEL_RADIUS = 3                          # steps from the site's own point
+PIXEL_MAX_REQUESTS = 25                   # per product
+PIXEL_GAIN = 0.003                        # correlation a neighbour must add over the site's own point
+PIXEL_MAX_AGE_S = 365 * 86400
+PIXEL_RETRY_S = 7 * 86400                 # too little data: try again after a week
 HF_START = date(2021, 3, 1)               # Open-Meteo historical-forecast archive
 PR_START = date.fromisoformat(W.PREVIOUS_RUNS_START)
 REFRESH_OPEN_S = 20 * 3600                # archive chunks that may still change are re-fetched after this
@@ -192,31 +207,140 @@ def choose_satellites(system: System, ok: Mapping[str, bool]) -> dict[str, str |
     return {"history": hist or live, "live": live}
 
 
-def satellite_requests(system: System, sats: Mapping[str, str | None], first_day: date, today: date) -> list[Request]:
-    """Archive chunks of the chosen satellite products (native resolution, per panel group)."""
+def chosen_models(sats: Mapping) -> list[str]:
+    return list(dict.fromkeys(v for v in (sats.get("history"), sats.get("live")) if v))
+
+
+# ---------------------------------------------------------------- satellite pixel
+Offset = tuple[int, int]
+
+
+def pixel_point(system: System, offset: Sequence[int]) -> tuple[float, float]:
+    """Grid point `offset` (lat, lon steps) away from the site's own 0.1 deg point."""
+    return (W.round_coord(W.round_coord(system.latitude) + offset[0] * PIXEL_STEP),
+            W.round_coord(W.round_coord(system.longitude) + offset[1] * PIXEL_STEP))
+
+
+def sat_offset(sats: Mapping, model: str) -> Offset:
+    o = (sats.get("offsets") or {}).get(model) or (0, 0)
+    return int(o[0]), int(o[1])
+
+
+def _pt(o: Sequence[int]) -> str:
+    return f"p{int(o[0]):+d}{int(o[1]):+d}"
+
+
+def _main_plane(system: System) -> S.Plane:
+    return max(system.planes, key=lambda p: p.kwp)
+
+
+def pixel_window(model: str, first_day: date, today: date) -> tuple[date, date] | None:
+    """The comparison window: the last PIXEL_DAYS both the PV history and the product's archive cover."""
+    b = today - timedelta(days=satellite_settle_days(model))
+    a = max(first_day + timedelta(days=1), date.fromisoformat(W.SATELLITES[model].since),
+            b - timedelta(days=PIXEL_DAYS))
+    return (a, b) if (b - a).days >= PIXEL_MIN_DAYS else None
+
+
+def pixel_request(system: System, model: str, offset: Sequence[int], window: tuple[date, date]) -> Request:
+    """Hourly plane irradiance of the main panel group at one candidate pixel."""
+    lat, lon = pixel_point(system, offset)
+    p = _main_plane(system)
+    a, b = window[0].isoformat(), window[1].isoformat()
+    url, params = W.satellite_request(model, lat, lon, a, b, p.tilt, p.azimuth, native=False)
+    return Request(f"pixel/{model}/{_pt(offset)}", "pixel", url, params | {"hourly": GTI}, a, b)
+
+
+def pixel_truth(system: System, rows: Mapping, window: tuple[date, date]) -> dict | None:
+    """PV clearness (PV / clear-sky power) on the window's full-output hours; None if too few."""
+    t0 = datetime(window[0].year, window[0].month, window[0].day, tzinfo=UTC).timestamp()
+    t1 = datetime(window[1].year, window[1].month, window[1].day, tzinfo=UTC).timestamp() + 86400
+    tab = hours_table(system, rows, {}, t0, t1)
+    tab.update(M.targets(tab, system.model_config()))
+    exact = tab["trainable"] & ~tab["cens"] & ~np.isnan(tab["k_obs"])
+    if exact.sum() < PIXEL_MIN_HOURS:
+        return None
+    return {"ts": tab["ts"][exact], "k": tab["k_obs"][exact]}
+
+
+def pixel_score(system: System, truth: Mapping, body: Mapping) -> tuple[float, int]:
+    """(correlation of the pixel's clearness with the PV's, hours compared); NaN without enough hours."""
+    try:
+        f = W.parse_satellite(body, 3600)
+    except (KeyError, TypeError, ValueError):
+        return float("nan"), 0
+    if "gti" not in f or not len(f["ts"]):
+        return float("nan"), 0
+    poa = S.poa_clearsky(S.solar(f["ts"] + 1800.0, system.site), _main_plane(system))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        k = np.where(poa >= F.SAT_MIN_POA, np.asarray(f["gti"], float) / poa, np.nan)
+    ks = _on(np.asarray(truth["ts"], float), {"ts": f["ts"], "k": k}, "k")
+    kp = np.asarray(truth["k"], float)
+    m = ~np.isnan(ks) & ~np.isnan(kp)
+    n = int(m.sum())
+    if n < PIXEL_MIN_HOURS or np.std(ks[m]) == 0 or np.std(kp[m]) == 0:
+        return float("nan"), n
+    return float(np.corrcoef(ks[m], kp[m])[0, 1]), n
+
+
+def _neighbours(center: Offset) -> list[Offset]:
+    return [(center[0] + i, center[1] + j) for i in (-1, 0, 1) for j in (-1, 0, 1)
+            if max(abs(center[0] + i), abs(center[1] + j)) <= PIXEL_RADIUS]
+
+
+def _valid(scores: Mapping[Offset, tuple[float, int]]) -> dict[Offset, float]:
+    return {o: c for o, (c, _) in scores.items() if not np.isnan(c)}
+
+
+def pixels_to_try(scores: Mapping[Offset, tuple[float, int]]) -> list[Offset]:
+    """Hill climb on the grid: the site's point and its neighbours, then the unscored neighbours of the
+    best pixel so far, until the best one is surrounded by scored pixels."""
+    valid = _valid(scores)
+    if not scores:
+        return _neighbours((0, 0))
+    if not valid:
+        return []
+    best = max(valid, key=valid.get)
+    return [o for o in _neighbours(best) if o not in scores]
+
+
+def best_pixel(scores: Mapping[Offset, tuple[float, int]]) -> Offset:
+    """The best-matching pixel; the site's own point unless a neighbour is clearly better."""
+    valid = _valid(scores)
+    if not valid:
+        return (0, 0)
+    best = max(valid, key=valid.get)
+    return best if valid[best] >= valid.get((0, 0), -np.inf) + PIXEL_GAIN else (0, 0)
+
+
+def satellite_requests(system: System, sats: Mapping, first_day: date, today: date) -> list[Request]:
+    """Archive chunks of the chosen satellite products (native resolution, per panel group, at the
+    product's pixel: a new pixel is a new archive)."""
     out: list[Request] = []
     last = today - timedelta(days=1)
-    for m in dict.fromkeys(v for v in (sats.get("history"), sats.get("live")) if v):
-        src = W.SATELLITES[m]
+    for m in chosen_models(sats):
+        src, off = W.SATELLITES[m], sat_offset(sats, m)
+        lat, lon = pixel_point(system, off)
         for i, p in enumerate(system.planes):
             tag = plane_tag(i, p)
             for a, b, q_end in quarters(max(first_day, date.fromisoformat(src.since)), last):
-                url, params = W.satellite_request(m, system.latitude, system.longitude, a.isoformat(), b.isoformat(),
-                                                  p.tilt, p.azimuth)
+                url, params = W.satellite_request(m, lat, lon, a.isoformat(), b.isoformat(), p.tilt, p.azimuth)
                 if i > 0:
                     params = params | {"hourly": GTI}
-                out.append(Request(f"sat/{m}/{tag}/{a}", "sat", url, params, a.isoformat(), b.isoformat(),
+                out.append(Request(f"sat/{m}/{_pt(off)}/{tag}/{a}", "sat", url, params, a.isoformat(), b.isoformat(),
                                    W.is_final(q_end.isoformat(), today.isoformat(), satellite_settle_days(m))))
     return out
 
 
-def live_satellite_requests(system: System, model: str, now: float) -> list[Request]:
-    """The live product's newest intervals (the last LIVE_SAT_WINDOW_S)."""
+def live_satellite_requests(system: System, sats: Mapping, now: float) -> list[Request]:
+    """The live product's newest intervals (the last LIVE_SAT_WINDOW_S) at its pixel."""
+    model = sats["live"]
+    lat, lon = pixel_point(system, sat_offset(sats, model))
     t = datetime.fromtimestamp(now, UTC)
     a, b = (t - timedelta(seconds=LIVE_SAT_WINDOW_S)).date().isoformat(), t.date().isoformat()
     out = []
     for i, p in enumerate(system.planes):
-        url, params = W.satellite_request(model, system.latitude, system.longitude, a, b, p.tilt, p.azimuth)
+        url, params = W.satellite_request(model, lat, lon, a, b, p.tilt, p.azimuth)
         out.append(Request(f"livesat/{model}/{plane_tag(i, p)}", "livesat", url,
                            params if i == 0 else params | {"hourly": GTI}))
     return out
@@ -315,11 +439,12 @@ def satellite_frame(system: System, model: str, bodies: Sequence[Sequence[Mappin
 
 
 def satellite_archive(system: System, responses: Callable[[str], list[tuple[str, dict]]],
-                      sats: Mapping[str, str | None]) -> dict[str, tuple[dict, float]]:
-    """{model: (frame, step)} for the chosen products from the stored archive."""
+                      sats: Mapping) -> dict[str, tuple[dict, float]]:
+    """{model: (frame, step)} for the chosen products from the stored archive (at their pixels)."""
     out = {}
-    for m in dict.fromkeys(v for v in (sats.get("history"), sats.get("live")) if v):
-        got = satellite_frame(system, m, [[b for _, b in responses(f"sat/{m}/{plane_tag(i, p)}/")]
+    for m in chosen_models(sats):
+        pt = _pt(sat_offset(sats, m))
+        got = satellite_frame(system, m, [[b for _, b in responses(f"sat/{m}/{pt}/{plane_tag(i, p)}/")]
                                           for i, p in enumerate(system.planes)])
         if got is not None:
             out[m] = got
@@ -467,6 +592,7 @@ def train(system: System, rows: Mapping, frames: Mapping, now: float, previous: 
     use_sat = share >= MIN_SAT_SHARE
     nowcast_features = NOWCAST_SAT if use_sat else NOWCAST
     out["satellite"] = {"history": sats.get("history"), "live": sats.get("live"), "maps": maps,
+                        "offsets": {m: list(sat_offset(sats, m)) for m in chosen_models(sats)},
                         "share": round(share, 3), "used": use_sat}
     if maps:
         rep["satellite_map_pairs"] = maps.get("n_pairs")
@@ -704,6 +830,7 @@ def potential_now(system: System, result: Mapping, models: Mapping, wx: Mapping[
     return out | {"w": round(0.0 if np.isnan(phys) else phys, 1), "basis": "physics"}
 
 
-__all__ = ["System", "Request", "archive_requests", "archive_frames", "choose_satellites", "live_frames",
-           "live_requests", "live_satellite_requests", "missing", "outputs", "probe_ok", "probe_requests",
-           "quarters", "satellite_frame", "satellite_requests", "train", "today_known", "load_models"]
+__all__ = ["System", "Request", "archive_requests", "archive_frames", "best_pixel", "choose_satellites",
+           "live_frames", "live_requests", "live_satellite_requests", "missing", "outputs", "pixel_request",
+           "pixel_score", "pixel_truth", "pixel_window", "pixels_to_try", "probe_ok", "probe_requests", "quarters",
+           "satellite_frame", "satellite_requests", "train", "today_known", "load_models"]

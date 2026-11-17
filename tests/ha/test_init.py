@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlencode
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.components.diagnostics import get_diagnostics_for_config_entry
@@ -68,8 +69,16 @@ async def test_learns_from_history(hass, configured, open_meteo, hass_client):
     assert c.result["range"] is not None and rep["peak_rss_mb"] > 0
     assert 0.5 < c.result["factor"] < 0.85                               # losses + the shade, on average
 
-    # satellite: SARAH3 trains, DWD (live) is mapped onto it, the real-time model uses both
-    assert c.sats == {"history": "eumetsat_sarah3", "live": "dwd_sis_europe_africa_v4"}
+    # satellite: SARAH3 trains, DWD (live) is mapped onto it, the real-time model uses both; both are read
+    # at the pixel that follows the PV (the fake's parallax), not at the site's own grid point
+    assert (c.sats["history"], c.sats["live"]) == ("eumetsat_sarah3", "dwd_sis_europe_africa_v4")
+    assert c.sats["offsets"] == {"eumetsat_sarah3": [0, 1], "dwd_sis_europe_africa_v4": [0, 1]}
+    native = [u for _, u, _, _ in open_meteo.mock_calls       # archive + live (not the coverage probes)
+              if "satellite-api" in str(u) and u.query.get("temporal_resolution") == "native"
+              and u.query["hourly"] != "shortwave_radiation"]
+    assert native and {(u.query["latitude"], u.query["longitude"]) for u in native} == {("45.0", "7.1")}
+    pixels = (await get_diagnostics_for_config_entry(hass, hass_client, entry))["satellite_pixels"]
+    assert pixels["eumetsat_sarah3"]["scores"]["+0,+1"] > pixels["eumetsat_sarah3"]["scores"]["+0,+0"]
     sat = c.result["satellite"]
     assert sat["used"] and sat["share"] > 0.9 and sat["maps"]["n_pairs"] >= 200
     assert c.result["nowcast_fc"] is not None and "sat_kgti_lag" in c.result["nowcast"]["features"]
@@ -77,9 +86,8 @@ async def test_learns_from_history(hass, configured, open_meteo, hass_client):
     # yesterday late morning (inside the live forecast): the satellite model with the live feed is close to truth
     noon = (datetime.now(UTC) - timedelta(days=1)).replace(hour=11, minute=7, second=0, microsecond=0).timestamp()
     day = datetime.fromtimestamp(noon, UTC).date().isoformat()
-    query = (f"latitude=45.0&longitude=7.0&tilt={TILT}&azimuth={AZIMUTH - 180}&start_date={day}&end_date={day}"
-             "&hourly=shortwave_radiation,direct_normal_irradiance,diffuse_radiation,global_tilted_irradiance"
-             "&models=dwd_sis_europe_africa_v4&temporal_resolution=native")
+    req = P.live_satellite_requests(c.system, c.sats, noon)[0]
+    query = urlencode(req.params | {"start_date": day, "end_date": day})
     live_sat = P.satellite_frame(c.system, "dwd_sis_europe_africa_v4", [[open_meteo_body(query)]])
     out = P.outputs(c.system, c.result, c._live, noon, models=c._models, live_sat=live_sat)
     truth = SYSTEM_LOSS * day_k([noon])[0] * clear_sky([noon - 420], period=900)["p_cs"][0]

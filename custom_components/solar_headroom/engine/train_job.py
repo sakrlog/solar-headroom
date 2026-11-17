@@ -2,8 +2,9 @@
 
 Home Assistant starts it with its own interpreter, so numpy is the one Home Assistant ships. Memory used
 by training is returned to the system when the process ends. The system description is read from the
-store (meta "system"), the result is written back (blob "models"), and one JSON line with the report is
-printed to stdout; progress goes to stderr.
+store (meta "system", satellite products in meta "satellite"), the result is written back (blob
+"models"), and one JSON line with the report is printed to stdout; progress goes to stderr. The last
+range table is kept apart (meta "range"), so training never loads the previous models.
 """
 from __future__ import annotations
 
@@ -50,10 +51,11 @@ def run(store_path: str, now: float | None = None, log=None) -> dict:
     sats = (store.get_meta("satellite") or {}).get("choice")
     frames = P.archive_frames(system, store.responses, sats)
     result = P.train(system, rows, frames, time.time() if now is None else now,
-                     previous=store.get_blob("models"), log=log or (lambda _: None))
+                     previous=store.get_meta("range"), log=log or (lambda _: None))
     result["report"]["wall_s"] = round(time.time() - t0, 1)
     result["report"]["peak_rss_mb"] = peak_rss_mb()
     store.put_blob("models", result)
+    store.set_meta("range", {"range": result["range"], "range_at": result["range_at"]})
     return result["report"]
 
 

@@ -121,14 +121,57 @@ def test_probe_ok_needs_daylight_values():
 
 def test_satellite_archive_plan():
     system = _system(((30.0, 180.0, 5.0), (15.0, 270.0, 2.0)))
-    sats = {"history": "eumetsat_sarah3", "live": "dwd_sis_europe_africa_v4"}
+    sats = {"history": "eumetsat_sarah3", "live": "dwd_sis_europe_africa_v4",
+            "offsets": {"dwd_sis_europe_africa_v4": [0, 2]}}
     reqs = P.satellite_requests(system, sats, date(2025, 11, 20), date(2026, 11, 15))
     keys = {r.key for r in reqs}
-    assert "sat/eumetsat_sarah3/30_180/all/2025-11-20" in keys
-    assert "sat/dwd_sis_europe_africa_v4/30_180/all/2026-02-14" in keys          # its archive starts later
-    assert not any(k.startswith("sat/dwd_sis_europe_africa_v4/30_180/all/2025") for k in keys)
-    second = next(r for r in reqs if r.key == "sat/eumetsat_sarah3/15_270/gti/2026-01-01")
+    assert "sat/eumetsat_sarah3/p+0+0/30_180/all/2025-11-20" in keys
+    assert "sat/dwd_sis_europe_africa_v4/p+0+2/30_180/all/2026-02-14" in keys    # its archive starts later
+    assert not any(k.startswith("sat/dwd_sis_europe_africa_v4/p+0+2/30_180/all/2025") for k in keys)
+    second = next(r for r in reqs if r.key == "sat/eumetsat_sarah3/p+0+0/15_270/gti/2026-01-01")
     assert second.params["hourly"] == "global_tilted_irradiance" and second.params["temporal_resolution"] == "native"
-    live = P.live_satellite_requests(system, sats["live"], 1_794_900_000.0)
+    assert (second.params["latitude"], second.params["longitude"]) == (45.0, 7.0)
+    dwd = next(r for r in reqs if r.key.startswith("sat/dwd"))
+    assert (dwd.params["latitude"], dwd.params["longitude"]) == (45.0, 7.2)       # its pixel, 2 steps east
+    live = P.live_satellite_requests(system, sats, 1_794_900_000.0)
     assert [r.key for r in live] == ["livesat/dwd_sis_europe_africa_v4/30_180/all",
                                      "livesat/dwd_sis_europe_africa_v4/15_270/gti"]
+    assert live[0].params["longitude"] == 7.2
+
+
+def test_pixel_hill_climb_finds_the_best_pixel():
+    true = (1, 2)                               # the pixel that follows the PV, two steps from the first ring
+
+    def corr(o):
+        return 0.95 - 0.04 * ((o[0] - true[0]) ** 2 + (o[1] - true[1]) ** 2) ** 0.5
+
+    scores = {}
+    while todo := P.pixels_to_try(scores):
+        assert all(max(abs(a), abs(b)) <= P.PIXEL_RADIUS for a, b in todo) and not set(todo) & set(scores)
+        scores |= {o: (corr(o), 500) for o in todo}
+    assert P.best_pixel(scores) == true and len(scores) <= P.PIXEL_MAX_REQUESTS
+    flat = {o: (0.9 + (0.001 if o == (1, 1) else 0.0), 500) for o in P.pixels_to_try({})}
+    assert P.best_pixel(flat) == (0, 0)                                        # no clear gain: own point
+    assert P.best_pixel({(0, 0): (float("nan"), 3)}) == (0, 0)
+    assert P.pixels_to_try({(0, 0): (float("nan"), 3)}) == []                 # no data: stop
+
+
+def test_pixel_score_and_window():
+    system = _system()
+    w = P.pixel_window("dwd_sis_europe_africa_v4", date(2024, 1, 1), date(2026, 11, 15))
+    assert w is not None and (w[1] - w[0]).days == P.PIXEL_DAYS
+    assert P.pixel_window("dwd_sis_europe_africa_v4", date(2026, 11, 1), date(2026, 11, 15)) is None
+    req = P.pixel_request(system, "eumetsat_sarah3", (-1, 1), w)
+    assert req.params["hourly"] == "global_tilted_irradiance" and "temporal_resolution" not in req.params
+    assert (req.params["latitude"], req.params["longitude"]) == (44.9, 7.1)
+    ts = np.arange(T0, T0 + 30 * 86400, 3600.0)
+    poa = S.poa_clearsky(S.solar(ts + 1800, system.site), system.planes[0])
+    k = 0.3 + 0.7 * np.mod(np.arange(len(ts)) * 0.37, 1.0)
+    day = poa > 200
+    truth = {"ts": ts[day], "k": 0.8 * k[day]}
+    body = {"hourly": {"time": (ts + 3600).astype(int).tolist(), "global_tilted_irradiance": (k * poa).tolist()}}
+    c, n = P.pixel_score(system, truth, body)
+    assert c > 0.999 and n == day.sum()
+    noisy = {"hourly": {"time": body["hourly"]["time"], "global_tilted_irradiance": (k[::-1] * poa).tolist()}}
+    assert P.pixel_score(system, truth, noisy)[0] < 0.5
+    assert np.isnan(P.pixel_score(system, truth, {"error": True})[0])

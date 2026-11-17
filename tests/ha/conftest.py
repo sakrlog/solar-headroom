@@ -29,12 +29,23 @@ SYSTEM_LOSS = 0.85
 URLS = ("https://api.open-meteo.com/v1/forecast", "https://historical-forecast-api.open-meteo.com/v1/forecast",
         "https://previous-runs-api.open-meteo.com/v1/forecast", "https://satellite-api.open-meteo.com/v1/archive")
 SAT_PUBLISHED_AFTER_S = 900       # the fake satellite publishes an interval 15 min after it ends
+SAT_TRUE_OFFSET = (0, 1)          # parallax: the fake satellite sees the site's sky one 0.1 deg step east
 
 
 def day_k(ts) -> np.ndarray:
     """Clearness of the UTC day of each time: deterministic, 0.25..1.0."""
     d = np.floor(np.asarray(ts, float) / 86400.0)
     return 0.25 + 0.75 * np.mod(np.abs(np.sin(d * 12.9898) * 43758.5453), 1.0)
+
+
+def sat_k(ts, lat: float, lon: float) -> np.ndarray:
+    """Fake satellite clearness at a grid point: the site's sky at the true pixel, more and more
+    unrelated hourly noise further away."""
+    ts = np.asarray(ts, float)
+    d = math.hypot(lat - (LAT + 0.1 * SAT_TRUE_OFFSET[0]), lon - (LON + 0.1 * SAT_TRUE_OFFSET[1])) / 0.1
+    w = min(0.8, 0.3 * d)
+    noise = 0.25 + 0.75 * np.mod(np.abs(np.sin(np.floor(ts / 3600) * 78.233 + lat * 12.9898) * 43758.5453), 1.0)
+    return (1 - w) * day_k(ts) + w * noise
 
 
 def clear_sky(starts, tilt: float = TILT, azimuth: float = AZIMUTH, kwp: float = KWP, period: float = 3600) -> dict:
@@ -78,7 +89,10 @@ def _times(q: dict) -> np.ndarray:
 def _values(base: str, t: np.ndarray, q: dict) -> np.ndarray:
     om_az, step = float(q.get("azimuth", 0.0)), _step(q)
     sky = clear_sky(t - step, float(q.get("tilt", TILT)), om_az + 180.0, 1.0, step)   # radiation: preceding step
-    k = day_k(t - step)
+    if q.get("models") in W.SATELLITES:
+        k = sat_k(t - step, float(q["latitude"]), float(q["longitude"]))
+    else:
+        k = day_k(t - step)
     vals = {"global_tilted_irradiance": sky["poa_cs"] * k, "shortwave_radiation": sky["ghi_cs"] * k,
             "direct_normal_irradiance": sky["dni_cs"] * k ** 2, "diffuse_radiation": sky["ghi_cs"] * k * (1 - k) + 20,
             "cloud_cover": 100 * (1 - k), "cloud_cover_low": 60 * (1 - k), "cloud_cover_mid": 30 * (1 - k),
@@ -118,6 +132,8 @@ async def configured(hass):
 
 
 @pytest.fixture(autouse=True)
-def _ha(recorder_mock, enable_custom_integrations):
-    """Every test: recorder first (the integration depends on it), then custom integrations enabled."""
+def _ha(recorder_mock, enable_custom_integrations, monkeypatch):
+    """Every test: recorder first (the integration depends on it), then custom integrations enabled; no
+    pause between requests to the fake Open-Meteo."""
+    monkeypatch.setattr("custom_components.solar_headroom.coordinator.REQUEST_PAUSE_S", 0)
     yield

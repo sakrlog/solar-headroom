@@ -8,7 +8,7 @@ import math
 import os
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -102,7 +102,7 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._models: dict = {}
         self._live: dict = {}
         self.live_at = 0.0
-        self.sats: dict = {}                      # chosen satellite products {"history", "live"}
+        self.sats: dict = {}                      # chosen satellite products {"history", "live", "offsets"}
         self._live_sat: tuple | None = None
         self.live_sat_at = 0.0
         seed = int(hashlib.sha256(entry.entry_id.encode()).hexdigest()[:8], 16)
@@ -198,7 +198,7 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         model = self.sats["live"]
         try:
             bodies = [[await self._async_get_json(session, r.url, r.params)]
-                      for r in P.live_satellite_requests(self.system, model, time.time())]
+                      for r in P.live_satellite_requests(self.system, self.sats, time.time())]
         except (aiohttp.ClientError, TimeoutError, OpenMeteoError) as err:
             LOGGER.debug("live satellite not available: %s", err)    # the estimate falls back to the forecast
             return
@@ -233,6 +233,7 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._async_sync_statistics()
             self.progress = "checking satellite coverage"
             await self._async_probe_satellites()
+            await self._async_pick_pixels()
             self.progress = "downloading weather archives"
             await self._async_sync_archives()
             self.progress = "training"
@@ -291,18 +292,76 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if probes and failed == len(probes):
             return                                  # keep the previous choice, try again next time
         choice = P.choose_satellites(self.system, ok)
-        await self.hass.async_add_executor_job(self.store.set_meta, "satellite",
-                                               {"probed_at": time.time(), "ok": ok, "choice": choice})
+        old = (meta or {}).get("choice") or {}
+        choice["offsets"] = {m: o for m, o in (old.get("offsets") or {}).items() if m in P.chosen_models(choice)}
+        await self.hass.async_add_executor_job(
+            self.store.set_meta, "satellite",
+            {"probed_at": time.time(), "ok": ok, "choice": choice, "pixels": (meta or {}).get("pixels") or {}})
         self.sats = choice
         LOGGER.debug("satellite products: %s -> %s", ok, choice)
 
-    async def _async_sync_archives(self) -> None:
+    async def _async_first_day(self) -> date | None:
+        """The first local day of stored history (None without any)."""
         spans = [await self.hass.async_add_executor_job(self.store.row_span, sid)
                  for sid in self.system.statistic_ids()]
         spans = [s for s in spans if s is not None]
-        if not spans:
+        return P.local_date(min(s[0] for s in spans), self.system.time_zone) if spans else None
+
+    async def _async_pick_pixels(self) -> None:
+        """Per chosen product, the satellite pixel whose clearness best follows the PV at full output
+        (yearly; weekly while there is too little full-output history to tell)."""
+        meta = await self.hass.async_add_executor_job(self.store.get_meta, "satellite")
+        first_day = await self._async_first_day()
+        if not meta or first_day is None:
             return
-        first_day = P.local_date(min(s[0] for s in spans), self.system.time_zone)
+        choice, pixels = meta.setdefault("choice", {}), meta.setdefault("pixels", {})
+        offsets = choice.setdefault("offsets", {})
+        session, now, today = async_get_clientsession(self.hass), time.time(), dt_util.now().date()
+        changed = False
+        for model in P.chosen_models(choice):
+            info = pixels.setdefault(model, {})
+            if model in offsets and now - float(info.get("at", 0)) < P.PIXEL_MAX_AGE_S:
+                continue
+            if now - float(info.get("tried_at", 0)) < P.PIXEL_RETRY_S:
+                continue
+            window = P.pixel_window(model, first_day, today)
+            truth = None
+            if window is not None:
+                lo = datetime(window[0].year, window[0].month, window[0].day, tzinfo=UTC).timestamp()
+                hi = datetime(window[1].year, window[1].month, window[1].day, tzinfo=UTC).timestamp() + 86400
+                rows = await self.hass.async_add_executor_job(self.store.row_columns, self.system.statistic_ids(),
+                                                              lo, hi)
+                truth = await self.hass.async_add_executor_job(P.pixel_truth, self.system, rows, window)
+            if truth is None:                       # too little full-output data yet
+                info["tried_at"], changed = now, True
+                continue
+            scores: dict = {}
+            try:
+                while (todo := P.pixels_to_try(scores)) and len(scores) < P.PIXEL_MAX_REQUESTS:
+                    for off in todo[: P.PIXEL_MAX_REQUESTS - len(scores)]:
+                        self.progress = f"finding the best satellite pixel ({len(scores) + 1})"
+                        r = P.pixel_request(self.system, model, off, window)
+                        body = await self._async_get_json(session, r.url, r.params)
+                        scores[off] = await self.hass.async_add_executor_job(P.pixel_score, self.system, truth,
+                                                                             body)
+                        await asyncio.sleep(REQUEST_PAUSE_S)
+            except (aiohttp.ClientError, TimeoutError, OpenMeteoError) as err:
+                LOGGER.warning("satellite pixel search for %s stopped: %s", model, err)
+                continue                            # next learning tries again
+            best = P.best_pixel(scores)
+            offsets[model] = list(best)
+            info.update(at=now, tried_at=now, hours=len(truth["ts"]),
+                        scores={f"{o[0]:+d},{o[1]:+d}": round(c, 4) for o, (c, _) in scores.items() if c == c})
+            changed = True
+            LOGGER.debug("satellite pixel for %s: offset %s of %d tried", model, best, len(scores))
+        if changed:
+            await self.hass.async_add_executor_job(self.store.set_meta, "satellite", meta)
+        self.sats = choice
+
+    async def _async_sync_archives(self) -> None:
+        first_day = await self._async_first_day()
+        if first_day is None:
+            return
         today = dt_util.now().date()
         reqs = P.archive_requests(self.system, first_day, today) + P.satellite_requests(self.system, self.sats,
                                                                                           first_day, today)
