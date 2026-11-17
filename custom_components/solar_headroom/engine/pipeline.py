@@ -695,6 +695,9 @@ def train(system: System, rows: Mapping, frames: Mapping, now: float, previous: 
                           ("used_share_30d", dt["complete"] & (dt["day"] >= dt["day"].max() - 30))):
             if sel.any() and dt["e_pot"][sel].sum() > 0:
                 rep[name] = round(float(dt["e_pv"][sel].sum() / dt["e_pot"][sel].sum()), 3)
+        last = np.flatnonzero(dt["complete"])[-14:]
+        rep["recent_days"] = [{"day": D.day_date(dt["day"][j]).isoformat(), "used_kwh": round(float(dt["e_pv"][j]), 2),
+                               "potential_kwh": round(float(dt["e_pot"][j]), 2)} for j in last]
         if pr[1].get("best_match") is not None and len(pr[1]["best_match"]["ts"]):
             daily = _train_daily(system, g, dt, pr, cfg, now, previous, t_air, rep)
             out["champion"]["daily"] = daily.pop("champion_daily", "physics")

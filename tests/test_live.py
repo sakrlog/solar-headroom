@@ -96,6 +96,16 @@ def test_estimate_carries_the_sky_model_error_and_fades():
     assert e.estimate(30.0 + 92 * 60, p_cs=4000.0, k_sky=0.4)["w"] == 1900.0
 
 
+def test_a_dim_full_output_moment_does_not_lower_the_estimate():
+    e = _est()
+    e.update("pv_w", 1000.0, 0.0)
+    e.update("bat_w", 300.0, 0.0)
+    e.estimate(25.0, p_cs=4000.0, k_sky=0.5)              # k 0.25: a cloud while the battery helped
+    e.update("bat_w", 0.0, 26.0)
+    e.update("pv_w", 900.0, 26.0)
+    assert e.estimate(60.0, p_cs=4000.0, k_sky=0.5)["w"] == pytest.approx(2000.0)   # the sky model's value
+
+
 def test_night_unknown_and_restore():
     e = _est()
     assert e.estimate(0.0, p_cs=4000.0, k_sky=0.5)["basis"] == "sky_model"   # no PV reading yet

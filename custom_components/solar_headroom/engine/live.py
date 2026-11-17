@@ -11,13 +11,17 @@ Which state the system is in comes from the newest readings, with the rules that
 * PV voltage inside the learned full-output band for V_WINDOW_S
 
 At full output the potential is the measured PV. Otherwise it is the sky model's clearness (k = power
-/ clear-sky power) corrected by the sky model's error at the last full-output moment, the correction
-fading with time constant TAU_S, and never below the measured PV:
+/ clear-sky power), raised when the sky model was too low at the last full-output moment, the
+correction fading with time constant TAU_S, and never below the measured PV:
 
-    k = k_sky(now) * (k_last / k_sky(last)) ** exp(-minutes since / TAU)
+    k = k_sky(now) * max(1, k_last / k_sky(last)) ** exp(-minutes since / TAU)
 
-Scored on a real off-grid site (66 moments where throttling ended, 21k moments with a pretended
-throttling gap): 26 % lower error than the sky model alone, 17 % lower than keeping the last k.
+Only upward: on an off-grid site the panels are often at full output *because* a cloud dimmed them
+(the battery has to help), so a downward correction from such a moment would carry the cloud into the
+sunnier stretch that follows. Checked on a real off-grid site, 5-second replay: daily potential -3.9 %
+against the training's hindsight reconstruction (two-way correction -11.3 %, sky model alone -5.0 %);
+at pretended throttling gaps of 5-75 min the same error as the two-way correction (17 % below the
+sky model alone) with a bias of -27 W instead of -169 W.
 
 DayLog adds up, per 5 minutes, the seconds covered and the potential and used energy, which the
 solar bank (engine.daily.bank_today) counts instead of the forecast for the past part of today.
@@ -38,7 +42,7 @@ DISCHARGE_HOLD_S = 20.0          # the battery must keep helping this long (not 
 V_WINDOW_S = 60.0                # PV voltage inside the band this long
 LAST_FULL_MAX_AGE_S = 90 * 60.0  # older full-output moments say nothing about now
 TAU_S = 40 * 60.0
-RATIO_BOUNDS = (0.25, 4.0)
+RATIO_BOUNDS = (1.0, 4.0)        # only upward (see above)
 MIN_K_SKY = 0.05
 BUCKET_S = 300
 MAX_STEP_S = 120.0               # a longer gap between two updates (restart, stall) is not counted
