@@ -1,6 +1,8 @@
-# engine tests (tests/, without tests/ha): Python >= 3.12; pvlib and lightgbm are parity references only
+# engine tests (tests/, without tests/ha): Python >= 3.12; pvlib and lightgbm are parity references only,
+# pandas + pyarrow read the research data (NREL PVDAQ parquet)
 numpy==2.5.4
 pytest==9.2.0
 pvlib==0.16.1
 pandas==3.1.1
 lightgbm==4.7.0
+pyarrow==26.0.1
