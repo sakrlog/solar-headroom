@@ -22,6 +22,7 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: SolarHe
         "store_mb": None if size is None else round(size / 1e6, 2),
         "trained_at": res.get("trained_at"), "champion": res.get("champion"), "factor": res.get("factor"),
         "factor_daily": res.get("factor_daily"), "range": res.get("range"), "report": res.get("report"),
-        "forecast_fetched_at": c.live_at,
+        "satellite": {k: v for k, v in (res.get("satellite") or {}).items() if k != "maps"},
+        "satellite_choice": c.sats, "forecast_fetched_at": c.live_at, "satellite_fetched_at": c.live_sat_at,
         "outputs": {k: data.get(k) for k in ("basis", "now", "today", "tomorrow", "day_after")},
     }

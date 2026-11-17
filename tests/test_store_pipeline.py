@@ -94,3 +94,41 @@ def test_combine_planes_weights_gti_by_kwp():
     assert c["global_tilted_irradiance"][1] == 0.75 * 200 + 0.25 * 400
     assert c["global_tilted_irradiance_d1"][1] == 0.75 * 20 + 0.25 * 40
     assert c["temperature_2m"].tolist() == [5.0, 6.0]
+
+
+def test_satellite_choice_follows_coverage_and_speed():
+    eu, us = _system(), P.System(39.7, -105.2, 1800.0, "America/Denver", (S.Plane(30.0, 180.0, 5.0),),
+                                 {"pv_w": [[{"statistic_id": "sensor.pv"}]]})
+    everything = {m: True for m in ("eumetsat_sarah3", "dwd_sis_europe_africa_v4", "jma_jaxa_mtg_fci", "noaa_goes19")}
+    assert P.choose_satellites(eu, everything) == {"history": "eumetsat_sarah3", "live": "dwd_sis_europe_africa_v4"}
+    assert P.choose_satellites(us, everything) == {"history": "noaa_goes19", "live": "noaa_goes19"}
+    no_sarah = everything | {"eumetsat_sarah3": False}
+    assert P.choose_satellites(eu, no_sarah)["history"] == "jma_jaxa_mtg_fci"
+    assert P.choose_satellites(eu, {}) == {"history": None, "live": None}
+    probes = P.probe_requests(eu, date(2026, 11, 15))
+    assert {r.key for r in probes} == {"probe/eumetsat_sarah3", "probe/jma_jaxa_mtg_fci",
+                                       "probe/dwd_sis_europe_africa_v4"}
+    assert all(r.params["hourly"] == "shortwave_radiation" for r in probes)
+
+
+def test_probe_ok_needs_daylight_values():
+    t = [1_700_000_000 + 1800 * i for i in range(4)]
+    body = {"hourly": {"time": t, "shortwave_radiation": [None, 0.0, 120.0, 80.0]}}
+    assert P.probe_ok("eumetsat_sarah3", body)
+    assert not P.probe_ok("eumetsat_sarah3", {"hourly": {"time": t, "shortwave_radiation": [None] * 4}})
+    assert not P.probe_ok("eumetsat_sarah3", {"error": True, "reason": "no data"})
+
+
+def test_satellite_archive_plan():
+    system = _system(((30.0, 180.0, 5.0), (15.0, 270.0, 2.0)))
+    sats = {"history": "eumetsat_sarah3", "live": "dwd_sis_europe_africa_v4"}
+    reqs = P.satellite_requests(system, sats, date(2025, 11, 20), date(2026, 11, 15))
+    keys = {r.key for r in reqs}
+    assert "sat/eumetsat_sarah3/30_180/all/2025-11-20" in keys
+    assert "sat/dwd_sis_europe_africa_v4/30_180/all/2026-02-14" in keys          # its archive starts later
+    assert not any(k.startswith("sat/dwd_sis_europe_africa_v4/30_180/all/2025") for k in keys)
+    second = next(r for r in reqs if r.key == "sat/eumetsat_sarah3/15_270/gti/2026-01-01")
+    assert second.params["hourly"] == "global_tilted_irradiance" and second.params["temporal_resolution"] == "native"
+    live = P.live_satellite_requests(system, sats["live"], 1_794_900_000.0)
+    assert [r.key for r in live] == ["livesat/dwd_sis_europe_africa_v4/30_180/all",
+                                     "livesat/dwd_sis_europe_africa_v4/15_270/gti"]

@@ -15,8 +15,9 @@ from homeassistant.helpers import entity_registry as er
 
 from custom_components.solar_headroom import energy
 from custom_components.solar_headroom.const import DOMAIN
+from custom_components.solar_headroom.engine import pipeline as P
 
-from .conftest import AZIMUTH, KWP, PV_ID, TILT, pv_rows
+from .conftest import AZIMUTH, KWP, PV_ID, SYSTEM_LOSS, TILT, clear_sky, day_k, open_meteo_body, pv_rows
 
 HISTORY_DAYS = 90
 
@@ -67,6 +68,28 @@ async def test_learns_from_history(hass, configured, open_meteo, hass_client):
     assert c.result["range"] is not None and rep["peak_rss_mb"] > 0
     assert 0.5 < c.result["factor"] < 0.85                               # losses + the shade, on average
 
+    # satellite: SARAH3 trains, DWD (live) is mapped onto it, the real-time model uses both
+    assert c.sats == {"history": "eumetsat_sarah3", "live": "dwd_sis_europe_africa_v4"}
+    sat = c.result["satellite"]
+    assert sat["used"] and sat["share"] > 0.9 and sat["maps"]["n_pairs"] >= 200
+    assert c.result["nowcast_fc"] is not None and "sat_kgti_lag" in c.result["nowcast"]["features"]
+    assert c._live_sat is not None                                         # fetched with the first update
+    # yesterday late morning (inside the live forecast): the satellite model with the live feed is close to truth
+    noon = (datetime.now(UTC) - timedelta(days=1)).replace(hour=11, minute=7, second=0, microsecond=0).timestamp()
+    day = datetime.fromtimestamp(noon, UTC).date().isoformat()
+    query = (f"latitude=45.0&longitude=7.0&tilt={TILT}&azimuth={AZIMUTH - 180}&start_date={day}&end_date={day}"
+             "&hourly=shortwave_radiation,direct_normal_irradiance,diffuse_radiation,global_tilted_irradiance"
+             "&models=dwd_sis_europe_africa_v4&temporal_resolution=native")
+    live_sat = P.satellite_frame(c.system, "dwd_sis_europe_africa_v4", [[open_meteo_body(query)]])
+    out = P.outputs(c.system, c.result, c._live, noon, models=c._models, live_sat=live_sat)
+    truth = SYSTEM_LOSS * day_k([noon])[0] * clear_sky([noon - 420], period=900)["p_cs"][0]
+    assert out["now"]["basis"] == "learned_satellite"
+    assert abs(out["now"]["w"] - truth) < 0.15 * truth, (out["now"], truth)
+    # the feed stopped at 11:00: two hours later the forecast-only model takes over
+    cut = {k: (v[live_sat[0]["ts"] < noon] if hasattr(v, "__len__") else v) for k, v in live_sat[0].items()}
+    stale = P.outputs(c.system, c.result, c._live, noon + 2 * 3600, models=c._models, live_sat=(cut, live_sat[1]))
+    assert stale["now"]["basis"] == "learned_forecast" and stale["now"].get("satellite_k") is None
+
     # sensors from the learned models
     tomorrow = _state(hass, "forecast_tomorrow")
     assert float(tomorrow.state) > 0
@@ -86,12 +109,12 @@ async def test_learns_from_history(hass, configured, open_meteo, hass_client):
     assert diag["system"]["latitude"] == "**REDACTED**" and diag["status"] == "ready"
 
     # a second run only fetches what changed: no new archive chunks, statistics continue
-    archive_calls = sum("historical-forecast" in str(u) or "previous-runs" in str(u)
-                        for _, u, _, _ in open_meteo.mock_calls)
+    def archive_calls() -> int:      # the satellite archive is planned the same way (tests/test_store_pipeline.py)
+        return sum("historical-forecast" in str(u) or "previous-runs" in str(u) for _, u, _, _ in open_meteo.mock_calls)
+    before = archive_calls()
     c.async_schedule_learning("test")
     await c._learning
-    again = sum("historical-forecast" in str(u) or "previous-runs" in str(u) for _, u, _, _ in open_meteo.mock_calls)
-    assert again == archive_calls
+    assert archive_calls() == before
     store = Path(c.store_path)
     assert store.exists()
 

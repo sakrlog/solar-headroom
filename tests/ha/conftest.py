@@ -20,13 +20,15 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClien
 
 from engine import features as F  # noqa: E402
 from engine import solar as S  # noqa: E402
+from engine import weather as W  # noqa: E402
 
 LAT, LON, ELEV, TZ = 45.0, 7.0, 300.0, "Europe/Rome"
 KWP, TILT, AZIMUTH = 5.0, 30.0, 180.0
 PV_ID = "sensor.pv_power"
 SYSTEM_LOSS = 0.85
 URLS = ("https://api.open-meteo.com/v1/forecast", "https://historical-forecast-api.open-meteo.com/v1/forecast",
-        "https://previous-runs-api.open-meteo.com/v1/forecast")
+        "https://previous-runs-api.open-meteo.com/v1/forecast", "https://satellite-api.open-meteo.com/v1/archive")
+SAT_PUBLISHED_AFTER_S = 900       # the fake satellite publishes an interval 15 min after it ends
 
 
 def day_k(ts) -> np.ndarray:
@@ -35,8 +37,8 @@ def day_k(ts) -> np.ndarray:
     return 0.25 + 0.75 * np.mod(np.abs(np.sin(d * 12.9898) * 43758.5453), 1.0)
 
 
-def clear_sky(starts, tilt: float = TILT, azimuth: float = AZIMUTH, kwp: float = KWP) -> dict:
-    return F.sky_features(np.asarray(starts, float), 3600, 4, S.Site(LAT, LON, ELEV), [S.Plane(tilt, azimuth, kwp)])
+def clear_sky(starts, tilt: float = TILT, azimuth: float = AZIMUTH, kwp: float = KWP, period: float = 3600) -> dict:
+    return F.sky_features(np.asarray(starts, float), period, 4, S.Site(LAT, LON, ELEV), [S.Plane(tilt, azimuth, kwp)])
 
 
 def pv_rows(first: datetime, last: datetime) -> list[dict]:
@@ -49,8 +51,15 @@ def pv_rows(first: datetime, last: datetime) -> list[dict]:
             for t, w in zip(starts, p, strict=True)]
 
 
+def _step(q: dict) -> float:
+    if q.get("temporal_resolution") == "native" and q.get("models") in W.SATELLITES:
+        return float(W.SATELLITES[q["models"]].step_s)
+    return 3600.0
+
+
 def _times(q: dict) -> np.ndarray:
-    """Open-Meteo hourly stamps (interval END for radiation) for the request's date window."""
+    """Open-Meteo stamps (interval END for radiation) for the request's date window; satellites only up
+    to what is published."""
     if "start_date" in q:
         a, b = date.fromisoformat(q["start_date"]), date.fromisoformat(q["end_date"])
     else:
@@ -59,13 +68,17 @@ def _times(q: dict) -> np.ndarray:
         b = today + timedelta(days=int(q.get("forecast_days", 7)) - 1)
     t0 = datetime(a.year, a.month, a.day, tzinfo=UTC).timestamp()
     t1 = datetime(b.year, b.month, b.day, tzinfo=UTC).timestamp() + 86400
-    return np.arange(t0, t1, 3600.0)
+    step = _step(q)
+    t = np.arange(t0 + step, t1 + 1, step) if step < 3600 or "temporal_resolution" in q else np.arange(t0, t1, step)
+    if "temporal_resolution" in q:
+        t = t[t <= datetime.now(UTC).timestamp() - SAT_PUBLISHED_AFTER_S]
+    return t
 
 
 def _values(base: str, t: np.ndarray, q: dict) -> np.ndarray:
-    om_az = float(q.get("azimuth", 0.0))
-    sky = clear_sky(t - 3600, float(q.get("tilt", TILT)), om_az + 180.0, 1.0)   # radiation: preceding hour
-    k = day_k(t - 3600)
+    om_az, step = float(q.get("azimuth", 0.0)), _step(q)
+    sky = clear_sky(t - step, float(q.get("tilt", TILT)), om_az + 180.0, 1.0, step)   # radiation: preceding step
+    k = day_k(t - step)
     vals = {"global_tilted_irradiance": sky["poa_cs"] * k, "shortwave_radiation": sky["ghi_cs"] * k,
             "direct_normal_irradiance": sky["dni_cs"] * k ** 2, "diffuse_radiation": sky["ghi_cs"] * k * (1 - k) + 20,
             "cloud_cover": 100 * (1 - k), "cloud_cover_low": 60 * (1 - k), "cloud_cover_mid": 30 * (1 - k),

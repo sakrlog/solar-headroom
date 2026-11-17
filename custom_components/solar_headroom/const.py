@@ -20,6 +20,7 @@ DEFAULT_AZIMUTH = 180
 
 UPDATE_INTERVAL = timedelta(minutes=5)       # outputs from the newest forecast + today's measurements
 LIVE_MAX_AGE_S = 3600                        # live forecast fetched again after this (+ per-install jitter)
+LIVE_SAT_INTERVAL_S = 900                    # live satellite (x panel groups / 2): with the forecast <= ~300 calls/day
 LIVE_STALE_S = 6 * 3600                      # older than this: status "degraded"
 RETRAIN_AFTER_S = 20 * 3600                  # at startup: train if the last training is older than this
 TRAIN_HOUR = 2                               # nightly training, local time (+ per-install minute)

@@ -41,7 +41,8 @@ def _range(lo_hi) -> dict[str, float]:
 
 def _now_attrs(c: SolarHeadroomCoordinator) -> dict:
     now = _get(c.data, "now") or {}
-    return {"basis": now.get("basis"), "clear_sky_power": now.get("clear_sky_w")}
+    return {"basis": now.get("basis"), "clear_sky_power": now.get("clear_sky_w"),
+            "satellite_clearness": now.get("satellite_k")}
 
 
 def _today_attrs(c: SolarHeadroomCoordinator) -> dict:
@@ -69,6 +70,7 @@ def _status_attrs(c: SolarHeadroomCoordinator) -> dict:
     return {"progress": c.progress or None, "days_of_data": rep.get("days_of_data"),
             "last_trained": datetime.fromtimestamp(trained, UTC).isoformat() if trained else None,
             "forecast_model": _get(res, "champion", "daily"), "nowcast_model": _get(res, "champion", "nowcast"),
+            "satellite": c.sats.get("live") if _get(res, "satellite", "used") else None,
             "daily_holdout": rep.get("daily_holdout"), "nowcast_holdout": rep.get("nowcast_holdout"),
             "last_error": c.last_error}
 

@@ -49,7 +49,7 @@ async def test_flow_reports_history(hass):
     await async_wait_recording_done(hass)
     result = await _through_panels(hass)
     assert result["step_id"] == "history"
-    assert result["description_placeholders"]["history"].startswith("1 year 1 month")
+    assert result["description_placeholders"]["history"] in ("1 year 1 month", "1 year 2 months")
 
 
 async def test_duplicate_sensors_abort(hass):

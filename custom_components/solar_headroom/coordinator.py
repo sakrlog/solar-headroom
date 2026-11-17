@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
 import sys
 import time
@@ -32,6 +33,7 @@ from .const import (
     CONF_TILT,
     DOMAIN,
     LIVE_MAX_AGE_S,
+    LIVE_SAT_INTERVAL_S,
     LIVE_STALE_S,
     LOGGER,
     REQUEST_PAUSE_S,
@@ -100,6 +102,9 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._models: dict = {}
         self._live: dict = {}
         self.live_at = 0.0
+        self.sats: dict = {}                      # chosen satellite products {"history", "live"}
+        self._live_sat: tuple | None = None
+        self.live_sat_at = 0.0
         seed = int(hashlib.sha256(entry.entry_id.encode()).hexdigest()[:8], 16)
         self.jitter_s = seed % 600                # installs spread their forecast fetches over 10 minutes
         self.train_minute = seed % 60
@@ -115,6 +120,7 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.store = await self.hass.async_add_executor_job(Store, self.store_path)
         self.result = await self.hass.async_add_executor_job(self.store.get_blob, "models")
         self._models = await self.hass.async_add_executor_job(P.load_models, self.result)
+        self.sats = (await self.hass.async_add_executor_job(self.store.get_meta, "satellite") or {}).get("choice") or {}
         if self.result:
             self.last_report = self.result.get("report")
             ready = (self.last_report or {}).get("status") == "ready"
@@ -156,9 +162,11 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.last_error = f"forecast: {err}"
         if not self._live:
             raise UpdateFailed("no weather forecast yet (Open-Meteo unreachable)")
+        if self.sats.get("live") and now - self.live_sat_at > self.live_sat_interval_s:
+            await self._async_fetch_live_satellite()
         rows5 = await self._async_today_rows()
         data = await self.hass.async_add_executor_job(P.outputs, self.system, self.result, self._live, now, rows5,
-                                                      self._models)
+                                                      self._models, self._live_sat)
         if now - self.live_at > LIVE_STALE_S and not self.learning:
             self.status = STATUS_DEGRADED
         return data
@@ -178,6 +186,23 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self.status == STATUS_DEGRADED and self.last_error and self.last_error.startswith("forecast"):
             self.status = STATUS_READY if self.result else STATUS_COLLECTING
             self.last_error = None
+
+    @property
+    def live_sat_interval_s(self) -> float:
+        """Every 15 min; less often with more panel groups (one request each): <= ~300 calls a day."""
+        return LIVE_SAT_INTERVAL_S * max(1, math.ceil(len(self.system.planes) / 2))
+
+    async def _async_fetch_live_satellite(self) -> None:
+        self.live_sat_at = time.time()
+        session = async_get_clientsession(self.hass)
+        model = self.sats["live"]
+        try:
+            bodies = [[await self._async_get_json(session, r.url, r.params)]
+                      for r in P.live_satellite_requests(self.system, model, time.time())]
+        except (aiohttp.ClientError, TimeoutError, OpenMeteoError) as err:
+            LOGGER.debug("live satellite not available: %s", err)    # the estimate falls back to the forecast
+            return
+        self._live_sat = await self.hass.async_add_executor_job(P.satellite_frame, self.system, model, bodies)
 
     async def _async_get_json(self, session: aiohttp.ClientSession, url: str, params: dict) -> dict:
         async with session.get(url, params={k: str(v) for k, v in params.items()},
@@ -206,6 +231,8 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             self.progress = "reading history"
             await self._async_sync_statistics()
+            self.progress = "checking satellite coverage"
+            await self._async_probe_satellites()
             self.progress = "downloading weather archives"
             await self._async_sync_archives()
             self.progress = "training"
@@ -242,6 +269,33 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 rows = await self._async_stats(a, b, {sid}, "hour", STAT_TYPES)
                 await self.hass.async_add_executor_job(self.store.put_rows, sid, rows.get(sid, []))
 
+    async def _async_probe_satellites(self) -> None:
+        """Which satellite products have data here (re-checked monthly)."""
+        meta = await self.hass.async_add_executor_job(self.store.get_meta, "satellite")
+        if meta and time.time() - float(meta.get("probed_at", 0)) < P.PROBE_MAX_AGE_S:
+            self.sats = meta.get("choice") or {}
+            return
+        session = async_get_clientsession(self.hass)
+        ok, failed = {}, 0
+        probes = P.probe_requests(self.system, dt_util.now().date())
+        for r in probes:
+            model = r.key.split("/", 1)[1]
+            try:
+                body = await self._async_get_json(session, r.url, r.params)
+                ok[model] = await self.hass.async_add_executor_job(P.probe_ok, model, body)
+            except OpenMeteoError:
+                ok[model] = False                   # answered: no such product here
+            except (aiohttp.ClientError, TimeoutError):
+                failed += 1                         # network: no verdict
+            await asyncio.sleep(REQUEST_PAUSE_S)
+        if probes and failed == len(probes):
+            return                                  # keep the previous choice, try again next time
+        choice = P.choose_satellites(self.system, ok)
+        await self.hass.async_add_executor_job(self.store.set_meta, "satellite",
+                                               {"probed_at": time.time(), "ok": ok, "choice": choice})
+        self.sats = choice
+        LOGGER.debug("satellite products: %s -> %s", ok, choice)
+
     async def _async_sync_archives(self) -> None:
         spans = [await self.hass.async_add_executor_job(self.store.row_span, sid)
                  for sid in self.system.statistic_ids()]
@@ -249,7 +303,9 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not spans:
             return
         first_day = P.local_date(min(s[0] for s in spans), self.system.time_zone)
-        reqs = P.archive_requests(self.system, first_day, dt_util.now().date())
+        today = dt_util.now().date()
+        reqs = P.archive_requests(self.system, first_day, today) + P.satellite_requests(self.system, self.sats,
+                                                                                          first_day, today)
         index = await self.hass.async_add_executor_job(self.store.response_index)
         todo = P.missing(reqs, index, time.time())
         session = async_get_clientsession(self.hass)
@@ -263,7 +319,7 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self.hass.async_add_executor_job(self.store.put_response, r.key, r.kind, body, r.first_day,
                                                    r.last_day, r.final)
             await asyncio.sleep(REQUEST_PAUSE_S)
-        for kind in ("hf", "pr"):
+        for kind in ("hf", "pr", "sat"):
             await self.hass.async_add_executor_job(self.store.drop_responses, [r.key for r in reqs], kind)
 
     async def _async_train(self) -> dict:

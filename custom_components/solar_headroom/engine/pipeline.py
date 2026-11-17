@@ -1,5 +1,6 @@
 """What the integration does with the engine, without Home Assistant.
 
+  probe_requests    which satellite products have data at the site (once a month)
   archive_requests  which Open-Meteo archive chunks a system needs (calendar quarters, per panel group)
   train             stored statistics + archives -> nowcast and daily models, physics factors, report
   outputs           models + the live forecast + today's measurements -> what the sensors show
@@ -7,13 +8,18 @@
 Runs in the training subprocess, in Home Assistant's executor and in tests. Weather frames keep
 Open-Meteo's variable names and raw timestamps (engine.weather); panel groups after the first only
 fetch their plane irradiance, which is combined by kWp.
+
+Satellite: the product with the longest archive at the site trains the models ("history", e.g. SARAH3
+in Europe/Africa); the fastest live product feeds the real-time estimate ("live", e.g. DWD every 10 min),
+mapped onto the history product's scale with quantile maps fitted where both overlap. Without a fresh
+live satellite the real-time estimate falls back to a forecast-only model.
 """
 from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -28,8 +34,14 @@ from . import weather as W
 from .regimes import LIMITED
 
 HOUR = 3600.0
-NOWCAST = F.SKY + F.FC
+NOWCAST = F.SKY + F.FC                    # real time without satellite (fallback)
+NOWCAST_SAT = F.SKY + F.SAT_LAG + F.FC    # real time: + what the satellite published in the last hour
 HINDSIGHT = F.SKY + F.FC                  # fills throttled / missing hours of past days
+HINDSIGHT_SAT = F.SKY + F.SAT_NOW + F.FC  # ... with the satellite of the hour itself
+MIN_SAT_SHARE = 0.3                       # satellite inputs once they cover this share of trainable hours
+LIVE_SAT_WINDOW_S = 3 * 3600              # live satellite request: the last hours
+LIVE_SAT_MAX_AGE_MIN = 90.0               # newest live interval older than this -> forecast-only estimate
+PROBE_MAX_AGE_S = 30 * 86400
 HF_START = date(2021, 3, 1)               # Open-Meteo historical-forecast archive
 PR_START = date.fromisoformat(W.PREVIOUS_RUNS_START)
 REFRESH_OPEN_S = 20 * 3600                # archive chunks that may still change are re-fetched after this
@@ -147,6 +159,69 @@ def archive_requests(system: System, first_day: date, today: date) -> list[Reque
     return out
 
 
+def satellite_settle_days(model: str) -> int:
+    return max(4, int(W.SATELLITES[model].delay_s // 86400) + 3)
+
+
+def probe_requests(system: System, today: date) -> list[Request]:
+    """One small request per satellite product whose footprint covers the site."""
+    c = W.satellite_candidates(system.latitude, system.longitude)
+    p = system.planes[0]
+    out = []
+    for m in dict.fromkeys(c["history"] + c["live"]):
+        day = (today - timedelta(days=satellite_settle_days(m))).isoformat()
+        url, params = W.satellite_request(m, system.latitude, system.longitude, day, day, p.tilt, p.azimuth)
+        out.append(Request(f"probe/{m}", "probe", url, params | {"hourly": "shortwave_radiation"}, day, day))
+    return out
+
+
+def probe_ok(model: str, body: Mapping) -> bool:
+    """A probe answer with daylight irradiance: the product covers the site."""
+    try:
+        f = W.parse_satellite(body, W.SATELLITES[model].step_s)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return "ghi" in f and bool(np.nansum(f["ghi"]) > 0)
+
+
+def choose_satellites(system: System, ok: Mapping[str, bool]) -> dict[str, str | None]:
+    """{"history": longest archive with data, "live": fastest live product with data} (None if none)."""
+    c = W.satellite_candidates(system.latitude, system.longitude)
+    hist = next((m for m in c["history"] if ok.get(m)), None)
+    live = next((m for m in c["live"] if ok.get(m)), None)
+    return {"history": hist or live, "live": live}
+
+
+def satellite_requests(system: System, sats: Mapping[str, str | None], first_day: date, today: date) -> list[Request]:
+    """Archive chunks of the chosen satellite products (native resolution, per panel group)."""
+    out: list[Request] = []
+    last = today - timedelta(days=1)
+    for m in dict.fromkeys(v for v in (sats.get("history"), sats.get("live")) if v):
+        src = W.SATELLITES[m]
+        for i, p in enumerate(system.planes):
+            tag = plane_tag(i, p)
+            for a, b, q_end in quarters(max(first_day, date.fromisoformat(src.since)), last):
+                url, params = W.satellite_request(m, system.latitude, system.longitude, a.isoformat(), b.isoformat(),
+                                                  p.tilt, p.azimuth)
+                if i > 0:
+                    params = params | {"hourly": GTI}
+                out.append(Request(f"sat/{m}/{tag}/{a}", "sat", url, params, a.isoformat(), b.isoformat(),
+                                   W.is_final(q_end.isoformat(), today.isoformat(), satellite_settle_days(m))))
+    return out
+
+
+def live_satellite_requests(system: System, model: str, now: float) -> list[Request]:
+    """The live product's newest intervals (the last LIVE_SAT_WINDOW_S)."""
+    t = datetime.fromtimestamp(now, UTC)
+    a, b = (t - timedelta(seconds=LIVE_SAT_WINDOW_S)).date().isoformat(), t.date().isoformat()
+    out = []
+    for i, p in enumerate(system.planes):
+        url, params = W.satellite_request(model, system.latitude, system.longitude, a, b, p.tilt, p.azimuth)
+        out.append(Request(f"livesat/{model}/{plane_tag(i, p)}", "livesat", url,
+                           params if i == 0 else params | {"hourly": GTI}))
+    return out
+
+
 def missing(requests: Sequence[Request], index: Mapping[str, tuple[bool, float]], now: float) -> list[Request]:
     """Requests not stored yet, or stored while still open and older than REFRESH_OPEN_S."""
     out = []
@@ -207,8 +282,10 @@ def split_models(frame: Mapping[str, np.ndarray], models: Sequence[str]) -> dict
     return out
 
 
-def archive_frames(system: System, responses: Callable[[str], list[tuple[str, dict]]]) -> dict:
-    """{"hf": frame, "pr": {lead: {model: frame}}} from stored archive responses (store.responses)."""
+def archive_frames(system: System, responses: Callable[[str], list[tuple[str, dict]]],
+                   sats: Mapping[str, str | None] | None = None) -> dict:
+    """{"hf": frame, "pr": {lead: {model: frame}}, "sat": {model: (frame, step)}, "sats": choice} from
+    stored archive responses (store.responses)."""
     kwp = [p.kwp for p in system.planes]
 
     def stitched(prefix: str, rename=None) -> list[dict]:
@@ -220,7 +297,49 @@ def archive_frames(system: System, responses: Callable[[str], list[tuple[str, di
         frame = combine_planes(stitched(f"pr/{model}/" + "{tag}/", W.lead_names(variables, (0, 1))), kwp)
         for lead, fr in W.split_leads(frame, (0, 1)).items():
             pr[lead][model] = fr
-    return {"hf": hf, "pr": pr}
+    sats = dict(sats or {})
+    return {"hf": hf, "pr": pr, "sat": satellite_archive(system, responses, sats) if sats else {}, "sats": sats}
+
+
+def satellite_frame(system: System, model: str, bodies: Sequence[Sequence[Mapping]]) -> tuple[dict, float] | None:
+    """Native satellite responses (per panel group, each a list of chunks) -> (frame with clear-sky
+    references and indices, step s), or None without data."""
+    step = float(W.SATELLITES[model].step_s)
+    per_plane = [W.concat([W.parse_satellite(b, int(step)) for b in chunks]) for chunks in bodies]
+    if not per_plane or "gti" not in per_plane[0] or not len(per_plane[0]["ts"]):
+        return None
+    if len(per_plane) > 1 and not all("gti" in f for f in per_plane[1:]):
+        return None
+    frame = W.combine_planes(per_plane, [p.kwp for p in system.planes])
+    return F.sat_with_clearsky(frame, step, system.site, system.planes), step
+
+
+def satellite_archive(system: System, responses: Callable[[str], list[tuple[str, dict]]],
+                      sats: Mapping[str, str | None]) -> dict[str, tuple[dict, float]]:
+    """{model: (frame, step)} for the chosen products from the stored archive."""
+    out = {}
+    for m in dict.fromkeys(v for v in (sats.get("history"), sats.get("live")) if v):
+        got = satellite_frame(system, m, [[b for _, b in responses(f"sat/{m}/{plane_tag(i, p)}/")]
+                                          for i, p in enumerate(system.planes)])
+        if got is not None:
+            out[m] = got
+    return out
+
+
+def satellite_sources(frames: Mapping[str, tuple[dict, float]], sats: Mapping[str, str | None],
+                      maps: Mapping | None = None) -> tuple[list[tuple[dict, float]], dict | None]:
+    """Sources in priority order (history first, live mapped onto its scale) + the maps used.
+    maps=None fits them on the overlap; pass stored maps to apply the same ones live."""
+    h, live = sats.get("history"), sats.get("live")
+    sources = []
+    if h in frames:
+        sources.append(frames[h])
+    if live and live != h and live in frames:
+        lf, step = frames[live]
+        if maps is None and h in frames:
+            maps = F.fit_source_maps(frames[h][0], frames[h][1], lf, step)
+        sources.append((F.harmonise(lf, maps or {}), step))
+    return sources, (dict(maps) if maps else None)
 
 
 def live_frames(system: System, bodies: Mapping[str, Mapping]) -> dict[str, dict[str, np.ndarray]]:
@@ -314,10 +433,10 @@ def train(system: System, rows: Mapping, frames: Mapping, now: float, previous: 
     cols = [H.columns(r)["start"] for r in rows.values()]
     starts = [float(c.min()) for c in cols if len(c)]
     ends = [float(c.max()) for c in cols if len(c)]
-    out: dict = {"version": 1, "trained_at": now, "system": system.to_dict(), "nowcast": None, "daily_d0": None,
-                 "daily_d1": None, "factor": DEFAULT_FACTOR, "factor_daily": DEFAULT_FACTOR,
+    out: dict = {"version": 1, "trained_at": now, "system": system.to_dict(), "nowcast": None, "nowcast_fc": None,
+                 "daily_d0": None, "daily_d1": None, "factor": DEFAULT_FACTOR, "factor_daily": DEFAULT_FACTOR,
                  "champion": {"nowcast": "physics", "daily": "physics"}, "range": None, "range_at": None,
-                 "report": {}}
+                 "satellite": None, "report": {}}
     rep = out["report"]
     if not starts:
         rep["status"] = "no_data"
@@ -338,12 +457,26 @@ def train(system: System, rows: Mapping, frames: Mapping, now: float, previous: 
             "days_of_data": round(float(np.sum(~np.isnan(pv))) / 24.0, 1)}
     log(f"hours table: {len(ts)} hours, {int(trainable.sum())} trainable")
 
+    # satellite: inputs once they cover enough of the trainable hours
+    sats = frames.get("sats") or {}
+    sources, maps = satellite_sources(frames.get("sat") or {}, sats)
+    share = 0.0
+    if sources:
+        tab.update({k: v for k, v in F.satellite_features(sources, ts, HOUR).items() if k != "ts"})
+        share = float(np.mean(~np.isnan(tab["sat_kgti_lag"][trainable]))) if trainable.any() else 0.0
+    use_sat = share >= MIN_SAT_SHARE
+    nowcast_features = NOWCAST_SAT if use_sat else NOWCAST
+    out["satellite"] = {"history": sats.get("history"), "live": sats.get("live"), "maps": maps,
+                        "share": round(share, 3), "used": use_sat}
+    if maps:
+        rep["satellite_map_pairs"] = maps.get("n_pairs")
+
     # nowcast: champion/challenger on the last HOLDOUT_DAYS, then the final fit on everything
     if trainable.sum() >= MIN_ML_HOURS:
         cut = t1 - HOLDOUT_DAYS * 86400
         before, hold = trainable & (ts < cut), exact & (ts >= cut)
         if before.sum() >= MIN_ML_HOURS and hold.sum() >= MIN_HOLDOUT_HOURS:
-            trial = M.fit(tab, before, NOWCAST, cfg)
+            trial = M.fit(tab, before, nowcast_features, cfg)
             pred = M.predict_k(trial, tab, hold) * tab["p_cs"][hold]
             f_before = _factor(pv, phys, exact & (ts < cut) & (ts >= cut - FACTOR_DAYS * 86400),
                                MIN_FACTOR_HOURS) or DEFAULT_FACTOR
@@ -352,8 +485,10 @@ def train(system: System, rows: Mapping, frames: Mapping, now: float, previous: 
                                       "physics_mae_w": round(err_phys, 1)}
             if err_ml < err_phys:
                 out["champion"]["nowcast"] = "ml"
-        out["nowcast"] = M.fit(tab, trainable, NOWCAST, cfg).to_dict()
-        log("nowcast model trained")
+        out["nowcast"] = M.fit(tab, trainable, nowcast_features, cfg).to_dict()
+        if use_sat:
+            out["nowcast_fc"] = M.fit(tab, trainable, NOWCAST, cfg).to_dict()   # when the live satellite stalls
+        log(f"nowcast model trained ({'satellite + forecast' if use_sat else 'forecast'})")
 
     # daily: reconstruct each past day's potential, then learn it from forecasts as issued
     tz = system.time_zone
@@ -368,8 +503,10 @@ def train(system: System, rows: Mapping, frames: Mapping, now: float, previous: 
         g["reason"] = np.where(on, tab["reason"][idx], "").astype(object)
         g.update(M.targets(g, cfg))
         _fc_columns(g, hf)
+        if use_sat:
+            g.update({k: v for k, v in F.satellite_features(sources, g["ts"], HOUR).items() if k != "ts"})
         throttled = bool(np.any(g["regime"] == LIMITED))
-        g = D.reconstruct(g, HINDSIGHT, _folds(g["ts"], 6) if throttled else [], cfg)
+        g = D.reconstruct(g, HINDSIGHT_SAT if use_sat else HINDSIGHT, _folds(g["ts"], 6) if throttled else [], cfg)
         dt = D.day_table(g)
         rep["days"] = int(len(dt["day"]))
         rep["complete_days"] = int(dt["complete"].sum())
@@ -444,7 +581,8 @@ def _train_daily(system: System, g: dict, dt: dict, pr: Mapping, cfg: M.ModelCon
 def load_models(result: Mapping | None) -> dict:
     """Model objects from a train() result (None where absent)."""
     result = result or {}
-    return {k: (M.load_model(result[k]) if result.get(k) else None) for k in ("nowcast", "daily_d0", "daily_d1")}
+    return {k: (M.load_model(result[k]) if result.get(k) else None)
+            for k in ("nowcast", "nowcast_fc", "daily_d0", "daily_d1")}
 
 
 def range_table(result: Mapping | None) -> dict[int, list[float]] | None:
@@ -472,7 +610,8 @@ def today_known(system: System, rows5: Mapping[str, list], hour_starts: np.ndarr
 
 
 def outputs(system: System, result: Mapping | None, live: Mapping[str, Mapping], now: float,
-            known_rows5: Mapping[str, list] | None = None, models: Mapping | None = None) -> dict:
+            known_rows5: Mapping[str, list] | None = None, models: Mapping | None = None,
+            live_sat: tuple[dict, float] | None = None) -> dict:
     """Everything the sensors and the Energy dashboard show, from the newest forecast."""
     result = result or {}
     models = models if models is not None else load_models(result)
@@ -518,13 +657,23 @@ def outputs(system: System, result: Mapping | None, live: Mapping[str, Mapping],
             out[name] = {"kwh": round(total, 1), "p10_kwh": round(float(lo[0]), 1), "p90_kwh": round(float(hi[0]), 1),
                          "clearness": None if np.isnan(c) else round(float(c), 3)}
     out["hourly"] = {float(t): round(float(w), 1) for t, w in zip(hs, pred, strict=True) if not np.isnan(w)}
-    out["now"] = potential_now(system, result, models, live["best_match"], now, t_air)
+    out["now"] = potential_now(system, result, models, live["best_match"], now, t_air, live_sat=live_sat)
     return out
 
 
+def live_sat_features(result: Mapping, live_sat: tuple[dict, float], starts, period_s: float) -> dict:
+    """Satellite features for periods from the live product, on the history product's scale. The lag
+    features are NaN when the interval they need has not been published (stale feed)."""
+    sat = result.get("satellite") or {}
+    frame, step = live_sat
+    maps = sat.get("maps") if sat.get("live") != sat.get("history") else None
+    return F.satellite_features([(F.harmonise(frame, maps) if maps else frame, step)], starts, period_s)
+
+
 def potential_now(system: System, result: Mapping, models: Mapping, wx: Mapping[str, np.ndarray], now: float,
-                  t_air, period_s: float = 900.0) -> dict:
-    """Sky-model estimate of the panels' power for the current quarter hour (W)."""
+                  t_air, period_s: float = 900.0, live_sat: tuple[dict, float] | None = None) -> dict:
+    """Sky-model estimate of the panels' power for the current quarter hour (W): satellite + forecast
+    model while the live satellite is fresh, else the forecast-only model, else physics."""
     start = np.floor(now / period_s) * period_s
     tab = F.sky_features([start], period_s, 3, system.site, system.planes, t_air=t_air,
                          change_points=system.change_points)
@@ -533,16 +682,28 @@ def potential_now(system: System, result: Mapping, models: Mapping, wx: Mapping[
     for c in {*F.FC, "fc_gti"}:
         tab[c] = fc.get(c, np.full(1, np.nan))
     p_cs = float(tab["p_cs"][0])
-    gti = float(tab["fc_gti"][0])
-    phys = result.get("factor", DEFAULT_FACTOR) * float(
-        D.physics_power([gti], tab["fc_temperature_2m"], system.planes, tab["ts"], t_air)[0])
+    out = {"clear_sky_w": round(p_cs, 1)}
     if p_cs <= 1:
-        return {"w": 0.0, "basis": "night", "clear_sky_w": round(p_cs, 1)}
-    if result.get("champion", {}).get("nowcast") == "ml" and models.get("nowcast") is not None:
-        k = float(M.predict_k(models["nowcast"], tab)[0])
-        return {"w": round(k * p_cs, 1), "basis": "learned", "clear_sky_w": round(p_cs, 1)}
-    return {"w": round(0.0 if np.isnan(phys) else phys, 1), "basis": "physics", "clear_sky_w": round(p_cs, 1)}
+        return out | {"w": 0.0, "basis": "night"}
+    sat = result.get("satellite") or {}
+    if result.get("champion", {}).get("nowcast") == "ml":
+        model, basis = None, "learned_forecast"
+        if sat.get("used") and models.get("nowcast") is not None and live_sat is not None:
+            sf = live_sat_features(result, live_sat, tab["ts"], period_s)
+            out["satellite_k"] = None if np.isnan(sf["sat_kgti_lag"][0]) else round(float(sf["sat_kgti_lag"][0]), 3)
+            if out["satellite_k"] is not None:
+                tab.update({k: v for k, v in sf.items() if k != "ts"})
+                model, basis = models["nowcast"], "learned_satellite"
+        if model is None:
+            model = models.get("nowcast_fc") if sat.get("used") else models.get("nowcast")
+        if model is not None:
+            k = float(M.predict_k(model, tab)[0])
+            return out | {"w": round(k * p_cs, 1), "basis": basis}
+    phys = result.get("factor", DEFAULT_FACTOR) * float(
+        D.physics_power(tab["fc_gti"], tab["fc_temperature_2m"], system.planes, tab["ts"], t_air)[0])
+    return out | {"w": round(0.0 if np.isnan(phys) else phys, 1), "basis": "physics"}
 
 
-__all__ = ["System", "Request", "archive_requests", "archive_frames", "live_frames", "live_requests", "missing",
-           "outputs", "train", "today_known", "load_models", "quarters"]
+__all__ = ["System", "Request", "archive_requests", "archive_frames", "choose_satellites", "live_frames",
+           "live_requests", "live_satellite_requests", "missing", "outputs", "probe_ok", "probe_requests",
+           "quarters", "satellite_frame", "satellite_requests", "train", "today_known", "load_models"]
