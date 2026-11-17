@@ -4,7 +4,22 @@ A Home Assistant integration that knows what your solar panels **could** deliver
 while the inverter is holding back (battery full, zero export, export limit, deliberate
 curtailment), and learns your system from Home Assistant's own history.
 
-Status: **engine done and validated (Phase 0); Home Assistant integration in progress.**
+Status: **early development.** The forecast side works (learning from history, satellite real-time
+estimate, Energy dashboard forecast); throttling-aware learning and the live estimate are next.
+
+## Installation (HACS, custom repository)
+
+Requires Home Assistant 2026.10 or newer and the recorder (on by default).
+
+1. HACS -> three-dot menu -> *Custom repositories* -> add `https://github.com/sakrlog/solar-headroom`,
+   type *Integration*; install *Solar Headroom* and restart Home Assistant.
+2. *Settings -> Devices & services -> Add integration -> Solar Headroom*: pick your solar power
+   sensor(s) (pre-filled from the Energy dashboard), enter the panels' kWp, tilt and direction.
+3. Forecasts appear within seconds; the learned models follow once the history and weather archives
+   are read (minutes). Add the forecast to the Energy dashboard under *Solar production*.
+
+Only [Open-Meteo](https://open-meteo.com) is contacted (no account, no key), with coordinates rounded
+to 0.1 deg (~10 km): about 150-300 requests a day, plus a one-time download of archives.
 
 ## Design in one paragraph
 
@@ -23,7 +38,7 @@ custom_components/solar_headroom/            the Home Assistant integration
     coordinator.py   history sync (recorder statistics), Open-Meteo, nightly training, outputs
     sensor.py        potential now, solar bank today / left today / tomorrow, learning status
     energy.py        hourly forecast for the Energy dashboard
-    button.py, diagnostics.py, translations/
+    button.py, diagnostics.py, translations/, brand/ (icons; drawn by docs/make_brand.py)
 custom_components/solar_headroom/engine/    numpy-only engine, no Home Assistant imports
     solar.py     sun position, clear sky (Ineichen), plane of array (Hay-Davies), IAM, temperature
     gbm.py       histogram gradient boosting with a censored squared loss, JSON persistence
@@ -49,13 +64,16 @@ test harness (Home Assistant 2026.10+ needs Python 3.14; `uv` installs it withou
 
 ```bash
 # engine + parity references
-python3 -m venv .venv && .venv/bin/pip install numpy pytest ruff pvlib pandas lightgbm pyarrow
+python3 -m venv .venv && .venv/bin/pip install -r requirements_dev.txt
 .venv/bin/python -m pytest            # tests/ha is skipped here
 # Home Assistant
-uv venv .venv-ha --python 3.14 && VIRTUAL_ENV=.venv-ha uv pip install pytest-homeassistant-custom-component ruff
+uv venv .venv-ha --python 3.14 && VIRTUAL_ENV=.venv-ha uv pip install -r requirements_test.txt
 .venv-ha/bin/python -m pytest         # engine tests without the parity references + tests/ha
 .venv-ha/bin/ruff check .
 ```
+
+CI (`.github/workflows/`): ruff, the engine tests on Python 3.12-3.14, the Home Assistant tests,
+hassfest and the HACS validation.
 
 ## License
 
