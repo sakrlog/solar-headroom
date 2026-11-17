@@ -1,0 +1,303 @@
+{
+ "features": [
+  "sun_el",
+  "sun_el_max",
+  "sun_az",
+  "poa_cs",
+  "p_cs",
+  "doy_sin",
+  "doy_cos",
+  "hour",
+  "segment",
+  "fc_cloud_cover",
+  "fc_cloud_cover_low",
+  "fc_cloud_cover_mid",
+  "fc_cloud_cover_high",
+  "fc_temperature_2m",
+  "fc_relative_humidity_2m",
+  "fc_wind_speed_10m",
+  "fc_precipitation",
+  "fc_sunshine_duration",
+  "fc_kgti",
+  "fc_snowfall",
+  "fc_snow_depth"
+ ],
+ "throttled_frac": 0.02,
+ "home_kwp": 8.0,
+ "tau_min": 40.0,
+ "sites": {
+  "golden": {
+   "location": "Golden, CO",
+   "step_min": 5.0,
+   "kwp_model": 6.0,
+   "learned": {
+    "charge_limit_w": 3000.0,
+    "v_full_max": null
+   },
+   "daylight_steps": 89449,
+   "throttled_pct": 56.2,
+   "rules": {
+    "measured": {
+     "throttled_steps": {
+      "n": 50301,
+      "mae_pct": 68.6,
+      "bias_pct": -68.6
+     },
+     "held_back_steps": {
+      "n": 61565,
+      "mae_pct": 57.7,
+      "bias_pct": -57.7
+     },
+     "daily_waste_kwh": {
+      "days": 650,
+      "true": 14.14,
+      "estimated": 0.0,
+      "mae": 14.14
+     }
+    },
+    "sky": {
+     "throttled_steps": {
+      "n": 50301,
+      "mae_pct": 19.5,
+      "bias_pct": -1.0
+     },
+     "held_back_steps": {
+      "n": 61565,
+      "mae_pct": 18.1,
+      "bias_pct": 0.8
+     },
+     "daily_waste_kwh": {
+      "days": 650,
+      "true": 14.14,
+      "estimated": 14.33,
+      "mae": 2.34
+     }
+    },
+    "two_way": {
+     "throttled_steps": {
+      "n": 50301,
+      "mae_pct": 19.4,
+      "bias_pct": -2.2
+     },
+     "held_back_steps": {
+      "n": 61565,
+      "mae_pct": 17.4,
+      "bias_pct": -0.8
+     },
+     "daily_waste_kwh": {
+      "days": 650,
+      "true": 14.14,
+      "estimated": 13.93,
+      "mae": 2.2
+     }
+    },
+    "upward": {
+     "throttled_steps": {
+      "n": 50301,
+      "mae_pct": 19.4,
+      "bias_pct": -0.7
+     },
+     "held_back_steps": {
+      "n": 61565,
+      "mae_pct": 18.1,
+      "bias_pct": 1.1
+     },
+     "daily_waste_kwh": {
+      "days": 650,
+      "true": 14.14,
+      "estimated": 14.41,
+      "mae": 2.35
+     }
+    }
+   },
+   "regime": {
+    "called_full_pct": 31.2,
+    "called_full_but_throttled_pct": 0.0,
+    "throttled_caught_pct": 100.0
+   },
+   "run_s": 28.2
+  },
+  "henderson": {
+   "location": "Henderson, NV",
+   "step_min": 5.0,
+   "kwp_model": 6.48,
+   "learned": {
+    "charge_limit_w": 3240.0,
+    "v_full_max": null
+   },
+   "daylight_steps": 91685,
+   "throttled_pct": 65.6,
+   "rules": {
+    "measured": {
+     "throttled_steps": {
+      "n": 60129,
+      "mae_pct": 72.5,
+      "bias_pct": -72.5
+     },
+     "held_back_steps": {
+      "n": 70375,
+      "mae_pct": 64.3,
+      "bias_pct": -64.3
+     },
+     "daily_waste_kwh": {
+      "days": 705,
+      "true": 20.07,
+      "estimated": 0.0,
+      "mae": 20.07
+     }
+    },
+    "sky": {
+     "throttled_steps": {
+      "n": 60129,
+      "mae_pct": 9.9,
+      "bias_pct": -2.3
+     },
+     "held_back_steps": {
+      "n": 70375,
+      "mae_pct": 9.7,
+      "bias_pct": -1.2
+     },
+     "daily_waste_kwh": {
+      "days": 705,
+      "true": 20.07,
+      "estimated": 19.7,
+      "mae": 1.78
+     }
+    },
+    "two_way": {
+     "throttled_steps": {
+      "n": 60129,
+      "mae_pct": 10.0,
+      "bias_pct": -3.0
+     },
+     "held_back_steps": {
+      "n": 70375,
+      "mae_pct": 9.3,
+      "bias_pct": -2.2
+     },
+     "daily_waste_kwh": {
+      "days": 705,
+      "true": 20.07,
+      "estimated": 19.37,
+      "mae": 1.7
+     }
+    },
+    "upward": {
+     "throttled_steps": {
+      "n": 60129,
+      "mae_pct": 9.9,
+      "bias_pct": -2.2
+     },
+     "held_back_steps": {
+      "n": 70375,
+      "mae_pct": 9.7,
+      "bias_pct": -1.0
+     },
+     "daily_waste_kwh": {
+      "days": 705,
+      "true": 20.07,
+      "estimated": 19.74,
+      "mae": 1.76
+     }
+    }
+   },
+   "regime": {
+    "called_full_pct": 23.2,
+    "called_full_but_throttled_pct": 0.0,
+    "throttled_caught_pct": 100.0
+   },
+   "run_s": 28.7
+  },
+  "arbuckle": {
+   "location": "Arbuckle, CA",
+   "step_min": 15.0,
+   "kwp_model": 8.0,
+   "learned": {
+    "charge_limit_w": 4000.0000000000005,
+    "v_full_max": null
+   },
+   "daylight_steps": 73356,
+   "throttled_pct": 54.1,
+   "rules": {
+    "measured": {
+     "throttled_steps": {
+      "n": 39684,
+      "mae_pct": 71.0,
+      "bias_pct": -71.0
+     },
+     "held_back_steps": {
+      "n": 48360,
+      "mae_pct": 59.9,
+      "bias_pct": -59.9
+     },
+     "daily_waste_kwh": {
+      "days": 1496,
+      "true": 20.62,
+      "estimated": 0.0,
+      "mae": 20.62
+     }
+    },
+    "sky": {
+     "throttled_steps": {
+      "n": 39684,
+      "mae_pct": 15.4,
+      "bias_pct": -8.1
+     },
+     "held_back_steps": {
+      "n": 48360,
+      "mae_pct": 14.1,
+      "bias_pct": -5.7
+     },
+     "daily_waste_kwh": {
+      "days": 1496,
+      "true": 20.62,
+      "estimated": 18.66,
+      "mae": 3.69
+     }
+    },
+    "two_way": {
+     "throttled_steps": {
+      "n": 39684,
+      "mae_pct": 15.4,
+      "bias_pct": -8.3
+     },
+     "held_back_steps": {
+      "n": 48360,
+      "mae_pct": 13.8,
+      "bias_pct": -6.3
+     },
+     "daily_waste_kwh": {
+      "days": 1496,
+      "true": 20.62,
+      "estimated": 18.46,
+      "mae": 3.62
+     }
+    },
+    "upward": {
+     "throttled_steps": {
+      "n": 39684,
+      "mae_pct": 15.4,
+      "bias_pct": -8.1
+     },
+     "held_back_steps": {
+      "n": 48360,
+      "mae_pct": 14.2,
+      "bias_pct": -5.6
+     },
+     "daily_waste_kwh": {
+      "days": 1496,
+      "true": 20.62,
+      "estimated": 18.68,
+      "mae": 3.68
+     }
+    }
+   },
+   "regime": {
+    "called_full_pct": 34.1,
+    "called_full_but_throttled_pct": 0.0,
+    "throttled_caught_pct": 100.0
+   },
+   "run_s": 56.5
+  }
+ }
+}

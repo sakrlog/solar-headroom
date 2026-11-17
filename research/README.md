@@ -7,6 +7,7 @@ is installed in Home Assistant.
 |---|---|
 | `learning_curves.py` | A new user installs: how accurate is the estimate after a day, a week, a month, a year? What does loading Home Assistant's history at install buy? |
 | `throttling.py` | On a system that throttles (off-grid, battery full), does learning from throttled hours as *floors* recover the hidden potential, where simpler approaches learn "low"? |
+| `live.py` | While the inverter is holding back right now, how close is the live estimate to what the panels could give? |
 
 Results land in `research/results/*.json` (small, committed). Raw downloads go to `research/data/`
 (git-ignored).
@@ -23,6 +24,9 @@ Results land in `research/results/*.json` (small, committed). Raw downloads go t
   that knows the time can learn "midday = darker than the forecast says". The engine's leak guard
   measures this on the training data and corrects it. Bias on throttled hours: −24 % → −8 % (Arbuckle),
   −11 % → −1 % (Golden), −5 % → −2 % (Henderson).
+* **The live estimate sees through the throttling.** At moments the inverter held back, the panels
+  delivered 69–73 % less than they could have; the live estimate is off by 10–19 % on average, with a
+  bias of −1 to −8 %. It never mistook a throttled moment for full output.
 
 ## 1. A new user's first year (`learning_curves.py`)
 
@@ -149,6 +153,30 @@ guarded result moves by at most 1.5 points. Throttled-hours bias: Golden −1.7 
 Arbuckle −9.8 %. Daily bank MAE: 9.6 / 5.9 / 10.6 %. The unguarded learner gets worse: Arbuckle −26 %.
 Full results: `results/throttling_taper80.json`.
 
+## 3. The live estimate while held back (`live.py`)
+
+The same simulated off-grid homes, now step by step at the data's own resolution (5 minutes; 15 for
+Arbuckle's meter). Every step, the simulated PV power, battery power and state of charge go through
+`engine.live` the way the integration feeds it from Home Assistant's sensors. It decides whether the
+panels are at full output (battery helping, or taking everything below its learned charge limit) and,
+if not, estimates what they could give. The sky model behind the estimate is the engine's nowcast
+learner, trained on the other months' hourly statistics (forecast features only, no satellite here).
+
+| site | throttled daylight steps | wrongly called full output | throttled steps: what the inverter delivered | live estimate (MAE / bias) | daily waste, true vs estimated |
+|---|---|---|---|---|---|
+| Golden, CO | 56 % | 0 % | −68.6 % | 19.4 % / −0.7 % | 14.1 vs 14.4 kWh (MAE 2.4) |
+| Henderson, NV | 66 % | 0 % | −72.5 % | 9.9 % / −2.2 % | 20.1 vs 19.7 kWh (MAE 1.8) |
+| Arbuckle, CA | 54 % | 0 % | −71.0 % | 15.4 % / −8.1 % | 20.6 vs 18.7 kWh (MAE 3.7) |
+
+How the estimate uses the last full-output moment: the sky model's error at that moment is carried
+forward, fading over ~40 minutes, **only upward**. On these sites the choice hardly matters (with an
+hourly forecast-only sky model there is little to correct): carrying it both ways is 0.1–0.4 points
+lower in error and 0.2–1.5 points more negative in bias. It matters on a real off-grid system
+replayed from its 5-second log: there the panels are often at full output *because* a cloud dimmed
+them (the battery has to help), and a downward correction carried that cloud into the sunnier minutes
+that followed. Daily potential against the training's hindsight reconstruction: −11 % both ways,
+−3.9 % upward only. Full results: `results/live.json`.
+
 ## Data
 
 Three grid-tied systems from NREL's PVDAQ, chosen for different climates and for having two or more
@@ -190,6 +218,7 @@ Licences: PVDAQ is CC BY 4.0. Deline, C., Perry, K., Deceglie, M., Muller, M., S
 .venv/bin/python -I research/throttling.py       # ~400 MB of PVDAQ files + ~40 Open-Meteo requests on first run
 .venv/bin/python -I research/throttling.py --taper-from 80     # a battery that tapers from 80 %
 .venv/bin/python -I research/learning_curves.py
+.venv/bin/python -I research/live.py             # ~2 minutes once the data is cached
 ```
 
 Once the data is cached, each run takes about 6–7 minutes on a desktop PC.

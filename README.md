@@ -4,9 +4,23 @@ A Home Assistant integration that knows what your solar panels **could** deliver
 while the inverter is holding back (battery full, zero export, export limit, deliberate
 curtailment), and learns your system from Home Assistant's own history.
 
-Status: **early development.** The forecast side works (learning from history, satellite real-time
-estimate, Energy dashboard forecast), and so does throttling-aware learning for off-grid and
-export-limited systems; the live estimate while throttled is next.
+Status: **early development.** Works: learning from history, satellite real-time estimate, Energy
+dashboard forecast, throttling-aware learning for off-grid and export-limited systems, and the live
+estimate while the inverter holds back.
+
+## What you get
+
+| sensor | |
+|---|---|
+| Solar potential (W) | what the panels could give right now: measured at full output, estimated while the inverter holds back (attribute `basis`: measured / estimated / the sky model's) |
+| Untapped solar (W) | potential minus what the panels give now: what you could still switch on (systems that can hold back) |
+| Solar wasted today (kWh) | the energy the panels could have given today but were held back from (systems that can hold back) |
+| Solar bank today / left today (kWh) | today's potential: what already came (or could have) plus the forecast for the rest, with a P10–P90 range |
+| Solar forecast tomorrow (kWh) | with a P10–P90 range; also the hourly forecast in the Energy dashboard |
+| Learning status | collecting / learning / ready / degraded, with the models' recent accuracy |
+
+How close the live estimate gets while held back, on public systems with simulated throttling:
+[research/README.md](research/README.md#3-the-live-estimate-while-held-back-livepy).
 
 ## Installation (HACS, custom repository)
 
@@ -38,15 +52,18 @@ online-learning library. Everything runs on numpy alone, which ships with Home A
 
 ```
 custom_components/solar_headroom/            the Home Assistant integration
-    config_flow.py   solar sensor(s) -> panels -> history check; panel groups are subentries
+    config_flow.py   solar sensor(s) -> panels -> does it hold back? -> battery / grid sensors -> history
+                     check (with a sign check); panel groups are subentries
     coordinator.py   history sync (recorder statistics), Open-Meteo, nightly training, outputs
-    sensor.py        potential now, solar bank today / left today / tomorrow, learning status
+    live.py          follows the sensors: the live potential, today's log of potential and used energy
+    sensor.py        potential now, untapped, wasted today, solar bank today / left / tomorrow, status
     energy.py        hourly forecast for the Energy dashboard
     button.py, diagnostics.py, translations/, brand/ (icons; drawn by docs/make_brand.py)
 custom_components/solar_headroom/engine/    numpy-only engine, no Home Assistant imports
     solar.py     sun position, clear sky (Ineichen), plane of array (Hay-Davies), IAM, temperature
     gbm.py       histogram gradient boosting with a censored squared loss, JSON persistence
     regimes.py   full output vs throttled, per system type; learns voltage band and charge limit per segment
+    live.py      the same rules on live readings; the estimate while held back; the day's energy log
     history.py   Home Assistant statistics rows -> aligned hourly / 5-minute arrays (units, signs, renames)
     weather.py   Open-Meteo request builders and parsers (satellite, forecasts, archives; no I/O)
     features.py  sun/season, satellite clear-sky indices (concurrent and real-time), forecast features
