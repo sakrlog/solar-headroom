@@ -19,6 +19,10 @@ estimate while the inverter holds back.
 | Solar forecast tomorrow (kWh) | with a P10–P90 range; also the hourly forecast in the Energy dashboard |
 | Learning status | collecting / learning / ready / degraded, with the models' recent accuracy |
 
+It tells you under *Settings -> Repairs* when it needs you: a sensor that gives no reading in daylight,
+a sensor without history (`state_class` missing), no forecast for hours, or battery / grid power that
+looks reversed (fixed with one click).
+
 How close the live estimate gets while held back, on public systems with simulated throttling:
 [research/README.md](research/README.md#3-the-live-estimate-while-held-back-livepy).
 
@@ -58,6 +62,7 @@ custom_components/solar_headroom/            the Home Assistant integration
     live.py          follows the sensors: the live potential, today's log of potential and used energy
     sensor.py        potential now, untapped, wasted today, solar bank today / left / tomorrow, status
     energy.py        hourly forecast for the Energy dashboard
+    repairs.py       issues for the Repairs panel (and the one-click sign fix)
     button.py, diagnostics.py, translations/, brand/ (icons; drawn by docs/make_brand.py)
 custom_components/solar_headroom/engine/    numpy-only engine, no Home Assistant imports
     solar.py     sun position, clear sky (Ineichen), plane of array (Hay-Davies), IAM, temperature

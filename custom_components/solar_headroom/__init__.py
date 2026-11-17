@@ -7,6 +7,7 @@ from pathlib import Path
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
+from homeassistant.helpers import issue_registry as ir
 
 from .const import DOMAIN, SUBENTRY_TYPE_PLANE
 from .coordinator import SolarHeadroomConfigEntry, SolarHeadroomCoordinator
@@ -47,3 +48,6 @@ async def async_remove_entry(hass: HomeAssistant, entry: SolarHeadroomConfigEntr
         if base.is_dir() and not any(base.iterdir()):
             shutil.rmtree(base, ignore_errors=True)
     await hass.async_add_executor_job(_remove)
+    for issue_domain, issue_id in list(ir.async_get(hass).issues):
+        if issue_domain == DOMAIN and (issue_id.endswith(f"_{entry.entry_id}") or f"_{entry.entry_id}_" in issue_id):
+            ir.async_delete_issue(hass, DOMAIN, issue_id)

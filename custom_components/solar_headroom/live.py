@@ -83,6 +83,9 @@ class LiveTracker:
         self.k_sky: float | None = None
         self.t_air: Any = 20.0
         self._parts: dict[str, float | None] = {}
+        self._unavailable: set[str] = set()
+        self.missing_s: dict[str, float] = {eid: 0.0 for eid in self.sources}   # daylight s without a reading
+        self._last_step: float | None = None
         self._store: HAStore = HAStore(hass, STORAGE_VERSION, f"{DOMAIN}.{entry_id}.live")
         self._listeners: list[Callable[[], None]] = []
         self._pending: CALLBACK_TYPE | None = None
@@ -96,7 +99,10 @@ class LiveTracker:
         self.day_log = L.DayLog.from_dict(saved.get("day_log"))
         now = time.time()
         for eid in self.sources:
-            self._read(self.hass.states.get(eid), now)
+            state = self.hass.states.get(eid)
+            if state is None:
+                self._unavailable.add(eid)
+            self._read(state, now)
         entry.async_on_unload(async_track_state_change_event(self.hass, list(self.sources), self._async_on_event))
         entry.async_on_unload(async_track_time_interval(self.hass, self._async_tick, TICK))
         entry.async_on_unload(self._cancel_pending)
@@ -151,6 +157,11 @@ class LiveTracker:
             return
         role, scale = self.sources[state.entity_id]
         value = state_value(state, role)
+        if value is None:
+            self._unavailable.add(state.entity_id)
+        else:
+            self._unavailable.discard(state.entity_id)
+            self.missing_s[state.entity_id] = 0.0
         ts = min(state.last_updated.timestamp(), now)
         if role == "pv_w":
             self._parts[state.entity_id] = value
@@ -161,6 +172,8 @@ class LiveTracker:
 
     @callback
     def _async_on_event(self, event: Event[EventStateChangedData]) -> None:
+        if event.data["new_state"] is None:                      # removed
+            self._unavailable.add(event.data["entity_id"])
         self._read(event.data["new_state"], time.time())
         if self._pending is None:
             self._pending = async_call_later(self.hass, DEBOUNCE_S, self._async_debounced)
@@ -182,11 +195,16 @@ class LiveTracker:
 
     @callback
     def _step(self, now: float) -> None:
+        prev, self._last_step = self._last_step, now
         try:
-            est = self.estimator.estimate(now, self._clear_sky(now), self.k_sky)
+            p_cs = self._clear_sky(now)
+            est = self.estimator.estimate(now, p_cs, self.k_sky)
         except Exception:  # noqa: BLE001 - the live estimate must not take the integration down
             LOGGER.exception("live estimate failed")
             return
+        if prev is not None and p_cs > 1.0:
+            for eid in self._unavailable:
+                self.missing_s[eid] += min(now - prev, L.MAX_STEP_S)
         counted = est["regime"] != L.UNKNOWN and est["w"] is not None
         self.day_log.step(now, est["w"] if counted else None, est["pv_w"] if counted else None)
         self.now = est

@@ -28,7 +28,9 @@ from homeassistant.util import dt as dt_util
 from .const import (
     ARCHIVE_WORKERS,
     CONF_AZIMUTH,
+    CONF_BATTERY_POWER,
     CONF_EXPORT_LIMIT,
+    CONF_GRID_POWER,
     CONF_KIND,
     CONF_KWP,
     CONF_PV_POWER,
@@ -60,12 +62,27 @@ from .engine import pipeline as P
 from .engine import solar as S
 from .engine.store import Store
 from .live import LiveTracker
+from .repairs import (
+    FORECAST_UNREACHABLE,
+    NO_STATISTICS,
+    SENSOR_UNAVAILABLE,
+    SIGN_REVERSED,
+    clear_issue,
+    issues_of,
+    raise_issue,
+)
 
 type SolarHeadroomConfigEntry = ConfigEntry[SolarHeadroomCoordinator]
 
 TRAIN_JOB = Path(__file__).parent / "engine" / "train_job.py"
 STAT_TYPES: set = {"mean", "min", "max"}
 UNITS = {"power": UnitOfPower.WATT, "voltage": UnitOfElectricPotential.VOLT}
+SENSOR_MISSING_S = 3600          # daylight seconds without a reading before a repair issue
+SIGN_CHECK_DAYS = 60
+
+
+def _key(entity_id: str) -> str:
+    return entity_id.replace(".", "_")
 
 
 class OpenMeteoError(Exception):
@@ -141,6 +158,7 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.requests_yesterday: dict | None = None
         self.tracker: LiveTracker | None = None
         self._t_air: Any = 20.0
+        self._created_at = time.time()
 
     # ------------------------------------------------------------ setup
     async def async_setup(self) -> None:
@@ -157,6 +175,14 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.tracker = LiveTracker(self.hass, entry.entry_id, self.system, entry_conf(entry),
                                    (self.result or {}).get("regime"))
         await self.tracker.async_start(entry)
+        configured = {_key(e) for e in self.tracker.sources}
+        for kind in (SENSOR_UNAVAILABLE, NO_STATISTICS):          # sensors no longer configured
+            for key in issues_of(self.hass, entry, kind):
+                if key not in configured:
+                    clear_issue(self.hass, entry, kind, key)
+        if self.system.kind == KIND_UNLIMITED:
+            for key in issues_of(self.hass, entry, SIGN_REVERSED):
+                clear_issue(self.hass, entry, SIGN_REVERSED, key)
         entry.async_on_unload(async_at_started(self.hass, self._async_started))
         entry.async_on_unload(async_track_time_change(self.hass, self._async_nightly, hour=TRAIN_HOUR,
                                                       minute=self.train_minute, second=0))
@@ -191,6 +217,7 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except (aiohttp.ClientError, TimeoutError, OpenMeteoError, ValueError) as err:
                 LOGGER.warning("Open-Meteo forecast not available: %s", err)
                 self.last_error = f"forecast: {err}"
+        self._check_forecast(now)
         if not self._live:
             raise UpdateFailed("no weather forecast yet (Open-Meteo unreachable)")
         if self._live_sat_wanted(now):
@@ -205,7 +232,45 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.tracker.set_sky(sky["w"] / cs if cs > 1 and sky.get("w") is not None else None, self._t_air)
         if now - self.live_at > LIVE_STALE_S and not self.learning:
             self.status = STATUS_DEGRADED
+        self._check_sensors()
         return data
+
+    # ------------------------------------------------------------ repairs
+    @callback
+    def _check_forecast(self, now: float) -> None:
+        if now - (self.live_at or self._created_at) > LIVE_STALE_S:
+            raise_issue(self.hass, self.config_entry, FORECAST_UNREACHABLE, {"error": self.last_error or "-"})
+        elif self._live:
+            clear_issue(self.hass, self.config_entry, FORECAST_UNREACHABLE)
+
+    @callback
+    def _check_sensors(self) -> None:
+        if self.tracker is None:
+            return
+        for eid, secs in self.tracker.missing_s.items():
+            if secs >= SENSOR_MISSING_S:
+                raise_issue(self.hass, self.config_entry, SENSOR_UNAVAILABLE, {"entity": eid}, key=_key(eid))
+            elif secs == 0.0:
+                clear_issue(self.hass, self.config_entry, SENSOR_UNAVAILABLE, key=_key(eid))
+
+    async def _async_check_signs(self) -> None:
+        """Battery and grid power against the last weeks of statistics (setup checks them once too)."""
+        if self.system.kind == KIND_UNLIMITED:
+            return
+        t1 = time.time() // 3600 * 3600
+        t0 = t1 - SIGN_CHECK_DAYS * 86400
+        rows = await self.hass.async_add_executor_job(self.store.rows, self.system.statistic_ids(), t0)
+        checks = await self.hass.async_add_executor_job(P.sign_checks, self.system, rows, t0, t1)
+        conf = entry_conf(self.config_entry)
+        for key, role in ((CONF_BATTERY_POWER, "bat_w"), (CONF_GRID_POWER, "grid_w")):
+            c = checks.get(role)
+            if c is None or c["ok"] is None:
+                continue
+            if c["ok"]:
+                clear_issue(self.hass, self.config_entry, SIGN_REVERSED, key=role)
+            else:
+                raise_issue(self.hass, self.config_entry, SIGN_REVERSED,
+                            {"entity": conf[key], "hours": str(c["hours"])}, key=role, fixable=True, data={"key": key})
 
     async def _async_fetch_live(self) -> None:
         session = async_get_clientsession(self.hass)
@@ -286,6 +351,7 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             self.progress = "reading history"
             await self._async_sync_statistics()
+            await self._async_check_signs()
             self.progress = "checking satellite coverage"
             await self._async_probe_satellites()
             await self._async_pick_pixels()
@@ -321,8 +387,11 @@ class SolarHeadroomCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 months = await self._async_stats(0.0, None, {sid}, "month", {"mean"})
                 if not months.get(sid):
                     LOGGER.warning("no long-term statistics for %s (needs state_class: measurement)", sid)
+                    if self.hass.states.get(sid) is not None:      # missing entirely: sensor_unavailable
+                        raise_issue(self.hass, self.config_entry, NO_STATISTICS, {"entity": sid}, key=_key(sid))
                     continue
                 start = months[sid][0]["start"]
+            clear_issue(self.hass, self.config_entry, NO_STATISTICS, key=_key(sid))
             for a, b in H.chunks(start, now, STATS_CHUNK_DAYS):
                 rows = await self._async_stats(a, b, {sid}, "hour", STAT_TYPES)
                 await self.hass.async_add_executor_job(self.store.put_rows, sid, rows.get(sid, []))

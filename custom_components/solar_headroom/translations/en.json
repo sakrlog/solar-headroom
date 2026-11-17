@@ -221,5 +221,33 @@
         "off_grid": "Off-grid with a battery (grid or generator only as backup)"
       }
     }
+  },
+  "issues": {
+    "sensor_unavailable": {
+      "title": "Solar Headroom: a sensor gives no reading",
+      "description": "{entity} has given no reading for more than an hour of daylight. Until it does, {title} cannot tell whether the panels give all they can, and the live potential falls back to the sky model.\n\nCheck the integration that provides the sensor, or pick another sensor in Solar Headroom's options."
+    },
+    "forecast_unreachable": {
+      "title": "Solar Headroom: no weather forecast",
+      "description": "{title} has had no forecast from Open-Meteo for more than 6 hours ({error}). The forecasts and the live estimate use older data until it is back. Check that Home Assistant can reach the internet; nothing else is needed."
+    },
+    "no_statistics": {
+      "title": "Solar Headroom: a sensor has no history",
+      "description": "Home Assistant keeps no long-term statistics for {entity}, so {title} cannot learn from it. Sensors need `state_class: measurement`; most inverter integrations set it. If yours does not, add it with a customization or a template sensor, or pick another sensor in Solar Headroom's options."
+    },
+    "sign_reversed": {
+      "title": "Solar Headroom: {entity} looks reversed",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Read {entity} the other way round?",
+            "description": "Over the last {hours} hours, {entity} moved against the battery's state of charge (or the grid against the solar power) the wrong way: it looks positive where Home Assistant's convention is negative. Solar Headroom will read it the other way round and learn again. You can change this back in the options."
+          }
+        },
+        "abort": {
+          "entry_removed": "Solar Headroom was removed."
+        }
+      }
+    }
   }
 }
