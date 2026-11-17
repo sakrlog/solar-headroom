@@ -212,6 +212,7 @@ async def test_off_grid_learns_the_potential_not_the_throttled_output(hass, conf
     pot = potential_w([r["start"].timestamp() for r in rows[PV_ID]])
     used_share = pv.sum() / pot.sum()                                  # 0.85 of the potential was used
     # over the past days: the share of the potential that was used (a grid-tied learner would say ~1.0)
-    assert abs(rep["used_share"] - used_share) < 0.05, (rep["used_share"], used_share)
+    # (the fake history ends now, so the season moves this a little; a grid-tied learner reports 1.0)
+    assert abs(rep["used_share"] - used_share) < 0.08 and rep["used_share"] < 0.92, (rep["used_share"], used_share)
     got = c.data["tomorrow"]["kwh"]
     assert abs(got - truth_kwh) < 0.12 * truth_kwh, (got, truth_kwh, c.result["champion"])

@@ -106,6 +106,51 @@ def test_a_dim_full_output_moment_does_not_lower_the_estimate():
     assert e.estimate(60.0, p_cs=4000.0, k_sky=0.5)["w"] == pytest.approx(2000.0)   # the sky model's value
 
 
+def test_voltage_band_learned_from_live_windows():
+    rng = np.random.default_rng(0)
+    band = L.VoltageBand()
+    for v in rng.normal(400, 20, 300):
+        band.add("full", v)
+    assert band.edge is None                                     # nothing surely held back yet
+    for v in rng.normal(450, 8, 300):
+        band.add("held", v)
+    assert band.edge == pytest.approx(np.quantile(np.asarray(band.held), L.BAND_MAX_LEAK), abs=0.1)
+    assert 425 < band.edge < 440
+    assert L.VoltageBand.from_dict(band.to_dict()).edge == band.edge
+    blurred = L.VoltageBand()                                    # voltage says nothing on this system
+    for v in rng.normal(450, 8, 300):
+        blurred.add("full", v)
+        blurred.add("held", v)
+    assert blurred.edge is None
+
+
+def test_estimator_samples_the_band_and_uses_it():
+    e = _est()
+    t = 0.0
+
+    def run(minutes, pv_v, bat, soc):
+        nonlocal t
+        e.update("bat_w", bat, t)
+        e.update("soc", soc, t)
+        for _ in range(minutes):
+            e.update("pv_v", pv_v, t)
+            e.estimate(t, p_cs=5000.0, k_sky=0.8)
+            t += 60.0
+
+    e.update("pv_w", 2000.0, t)
+    run(L.BAND_MIN + 10, 395.0, 500.0, 60.0)                     # discharging: full output, MPP voltage
+    run(L.BAND_MIN + 10, 455.0, 0.0, 100.0)                      # full and idle: held back, high voltage
+    assert min(len(e.band.full), len(e.band.held)) >= L.BAND_MIN and e.band.edge == pytest.approx(455.0)
+    held = len(e.band.held)
+    run(2, 395.0, 0.0, 100.0)
+    assert e.regime(t - 60.0) == (L.FULL, "voltage")
+    assert len(e.band.held) == held + 2                          # still sampled: else the edge would creep up
+    assert _est(v_full_max=380.0).cfg.v_full_max == 380.0        # a configured edge wins over the live one
+    e2 = _est()
+    e2.restore(e.to_dict())
+    assert e2.band.edge == e.band.edge
+
+
 def test_night_unknown_and_restore():
     e = _est()
     assert e.estimate(0.0, p_cs=4000.0, k_sky=0.5)["basis"] == "sky_model"   # no PV reading yet

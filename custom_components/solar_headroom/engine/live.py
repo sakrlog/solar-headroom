@@ -8,7 +8,10 @@ Which state the system is in comes from the newest readings, with the rules that
   `soc_accepts_all`, charging clearly below its learned limit); off-grid only while no grid or
   generator is present
 * export-limited: export clearly below the limit, or importing
-* PV voltage inside the learned full-output band for V_WINDOW_S
+* PV voltage inside the full-output band for V_WINDOW_S. The band's edge is learned from these live
+  windows themselves (VoltageBand), not from the hourly statistics: a 60-second maximum is lower than
+  an hourly one, so an hourly edge lets throttled moments through (on a real off-grid site 6-9 % at
+  the edges hourly data gave, against ~1 % by construction here)
 
 At full output the potential is the measured PV. Otherwise it is the sky model's clearness (k = power
 / clear-sky power), raised when the sky model was too low at the last full-output moment, the
@@ -47,6 +50,49 @@ MIN_K_SKY = 0.05
 BUCKET_S = 300
 MAX_STEP_S = 120.0               # a longer gap between two updates (restart, stall) is not counted
 KEEP_S = 2 * 86400
+BAND_SAMPLE_S = 60.0             # one voltage-band sample per minute at most
+BAND_KEEP = 3000                 # per class (~ several days of daylight)
+BAND_MIN = 200
+BAND_MAX_LEAK = 0.02             # share of the full-and-idle windows allowed below the edge (some of
+                                 # them are full output: the load took all the panels gave)
+BAND_MIN_COVERAGE = 0.25         # the edge must find at least this share of full-output windows
+
+
+@dataclass
+class VoltageBand:
+    """Upper edge of the full-output PV voltage band for live windows. Samples: the window's highest
+    voltage while the battery proves full output (helping, or taking everything), and while the battery
+    is full and idle (surely held back: throttling pushes the string toward open circuit). The edge is
+    the voltage that at most BAND_MAX_LEAK of the held-back windows fell below (cf. regimes.learn_voltage_band)."""
+    full: deque = field(default_factory=lambda: deque(maxlen=BAND_KEEP))
+    held: deque = field(default_factory=lambda: deque(maxlen=BAND_KEEP))
+    edge: float | None = None
+    _new: int = 0
+
+    def add(self, kind: str, v_max: float) -> None:
+        (self.full if kind == "full" else self.held).append(round(v_max, 1))
+        self._new += 1
+        if self._new >= 10:
+            self._new = 0
+            self.edge = self.learn()
+
+    def learn(self) -> float | None:
+        if len(self.full) < BAND_MIN or len(self.held) < BAND_MIN:
+            return None
+        edge = float(np.quantile(np.asarray(self.held), BAND_MAX_LEAK))
+        coverage = float(np.mean(np.asarray(self.full) < edge))
+        return round(edge, 1) if coverage >= BAND_MIN_COVERAGE else None
+
+    def to_dict(self) -> dict:
+        return {"full": list(self.full), "held": list(self.held)}
+
+    @classmethod
+    def from_dict(cls, d: Mapping | None) -> VoltageBand:
+        b = cls()
+        b.full.extend(float(x) for x in (d or {}).get("full") or ())
+        b.held.extend(float(x) for x in (d or {}).get("held") or ())
+        b.edge = b.learn()
+        return b
 
 
 @dataclass
@@ -56,12 +102,15 @@ class LiveEstimator:
     disch_since: float | None = None
     v_hist: deque = field(default_factory=deque)            # (ts, pv_v)
     last_full: tuple[float, float, float] | None = None     # (ts, k, k_sky)
+    band: VoltageBand = field(default_factory=VoltageBand)
+    _band_at: float = -math.inf
 
     @classmethod
     def for_system(cls, kind: str, export_limit_w: float, learned: Mapping | None) -> LiveEstimator:
+        """learned: thresholds from training (the charge limit; the hourly voltage edge is not used live)."""
         learned = learned or {}
         return cls(R.RegimeConfig(kind=kind, export_limit_w=export_limit_w,
-                                  charge_limit_w=learned.get("charge_limit_w"), v_full_max=learned.get("v_full_max")))
+                                  charge_limit_w=learned.get("charge_limit_w")))
 
     # ------------------------------------------------------------ inputs
     def update(self, role: str, value: float | None, ts: float) -> None:
@@ -118,16 +167,37 @@ class LiveEstimator:
                     return FULL, "export_below_limit"
             elif grid > c.import_w:
                 return FULL, "importing"
-        if c.v_full_max is not None and pv > c.voltage_min_w:
+        edge = self.band.edge if c.v_full_max is None else c.v_full_max
+        if edge is not None and pv > c.voltage_min_w:
             v_max = self._v_max(now)
-            if v_max is not None and v_max < c.v_full_max:
+            if v_max is not None and v_max < edge:
                 return FULL, "voltage"
         return THROTTLED, "external_source" if external else "held_back"
+
+    def _sample_band(self, now: float, regime: str, reason: str) -> None:
+        v = self.values
+        if now - self._band_at < BAND_SAMPLE_S or v.get("pv_w", 0.0) <= self.cfg.voltage_min_w:
+            return
+        v_max = self._v_max(now)
+        if v_max is None:
+            return
+        bat, soc = v.get("bat_w"), v.get("soc")
+        if reason in ("discharging", "battery_hungry"):
+            kind = "full"
+        elif reason in ("held_back", "voltage", "external_source") and bat is not None and soc is not None \
+                and soc >= 99.0 and abs(bat) < 100.0:      # "voltage" too: else the edge would only creep up
+            kind = "held"
+        else:
+            return
+        self._band_at = now
+        self.band.add(kind, v_max)
 
     def estimate(self, now: float, p_cs: float, k_sky: float | None) -> dict:
         """Potential now (W). p_cs: clear-sky power of the panels now; k_sky: the sky model's clearness for
         now (None without a model). basis: night | measured | estimated | sky_model | unknown."""
         regime, reason = self.regime(now)
+        if "pv_v" in self.values:
+            self._sample_band(now, regime, reason)
         pv = max(0.0, self.values.get("pv_w", 0.0))
         out = {"regime": regime, "reason": reason, "pv_w": pv, "clear_sky_w": p_cs}
         if p_cs < 1.0:
@@ -154,11 +224,12 @@ class LiveEstimator:
                       "minutes_since_full": None if minutes is None else round(minutes, 1)}
 
     def to_dict(self) -> dict:
-        return {"last_full": list(self.last_full) if self.last_full else None}
+        return {"last_full": list(self.last_full) if self.last_full else None, "band": self.band.to_dict()}
 
     def restore(self, d: Mapping | None) -> None:
         lf = (d or {}).get("last_full")
         self.last_full = tuple(float(x) for x in lf) if lf else None
+        self.band = VoltageBand.from_dict((d or {}).get("band"))
 
 
 @dataclass
@@ -220,4 +291,4 @@ def merge_known(kind: str, live: Mapping[str, np.ndarray], stats: Mapping[str, n
     return {k: np.where(use_stats, stats[k], live[k]) for k in ("covered_s", "potential_wh", "used_wh")}
 
 
-__all__ = ["FULL", "NIGHT", "THROTTLED", "UNKNOWN", "DayLog", "LiveEstimator", "merge_known"]
+__all__ = ["FULL", "NIGHT", "THROTTLED", "UNKNOWN", "DayLog", "LiveEstimator", "VoltageBand", "merge_known"]

@@ -40,4 +40,6 @@ def _live(c) -> dict | None:
         return None
     return {"now": t.now, "rules": asdict(t.estimator.cfg), "last_full": t.estimator.last_full,
             "sky_k": t.k_sky, "wasted_today_kwh": round(t.wasted_today_kwh(), 3),
+            "voltage_band": {"edge": t.estimator.band.edge, "full_samples": len(t.estimator.band.full),
+                             "held_samples": len(t.estimator.band.held)},
             "log_covered_h": round(sum(v[0] for v in t.day_log.buckets.values()) / 3600.0, 2)}

@@ -124,15 +124,18 @@ class LiveTracker:
     @callback
     def set_sky(self, k_sky: float | None, t_air: Any) -> None:
         """The sky model's clearness for the current quarter hour and the air temperature source."""
+        changed = k_sky != self.k_sky
         self.k_sky, self.t_air = k_sky, t_air
         self._p_cs = None
+        if changed and self._last_step is not None:      # show the new model now, not at the next tick
+            self._written = None
+            self._step(time.time())
 
     @callback
     def set_learned(self, learned: dict | None) -> None:
-        """Thresholds from a new training (charge limit, PV-voltage band); the readings are kept."""
+        """Thresholds from a new training (the charge limit); readings and the live voltage band are kept."""
         learned = learned or {}
-        self.estimator.cfg = replace(self.estimator.cfg, charge_limit_w=learned.get("charge_limit_w"),
-                                     v_full_max=learned.get("v_full_max"))
+        self.estimator.cfg = replace(self.estimator.cfg, charge_limit_w=learned.get("charge_limit_w"))
 
     def day_log_copy(self) -> L.DayLog:
         """For a worker thread: the log keeps changing in the event loop."""

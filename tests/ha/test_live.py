@@ -113,6 +113,7 @@ async def test_live_potential_off_grid(hass, configured, open_meteo, freezer):
 
     # a reload keeps the last full-output moment and today's log
     last_full = t.estimator.last_full
+    wasted = t.wasted_today_kwh()
     assert await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
     t2 = entry.runtime_data.tracker

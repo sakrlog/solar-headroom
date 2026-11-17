@@ -68,7 +68,8 @@ custom_components/solar_headroom/engine/    numpy-only engine, no Home Assistant
     solar.py     sun position, clear sky (Ineichen), plane of array (Hay-Davies), IAM, temperature
     gbm.py       histogram gradient boosting with a censored squared loss, JSON persistence
     regimes.py   full output vs throttled, per system type; learns voltage band and charge limit per segment
-    live.py      the same rules on live readings; the estimate while held back; the day's energy log
+    live.py      the same rules on live readings (its PV-voltage band learned from live windows); the
+                 estimate while held back; the day's energy log
     history.py   Home Assistant statistics rows -> aligned hourly / 5-minute arrays (units, signs, renames)
     weather.py   Open-Meteo request builders and parsers (satellite, forecasts, archives; no I/O)
     features.py  sun/season, satellite clear-sky indices (concurrent and real-time), forecast features
