@@ -1,8 +1,27 @@
+<img src="custom_components/solar_headroom/brand/icon.png" alt="" width="96" align="right">
+
 # Solar Headroom
+
+[![Tests](https://github.com/sakrlog/solar-headroom/actions/workflows/tests.yml/badge.svg)](https://github.com/sakrlog/solar-headroom/actions/workflows/tests.yml)
+[![Validate](https://github.com/sakrlog/solar-headroom/actions/workflows/validate.yml/badge.svg)](https://github.com/sakrlog/solar-headroom/actions/workflows/validate.yml)
+[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 A Home Assistant integration that knows what your solar panels **could** deliver right now, even
 while the inverter is holding back (battery full, zero export, export limit, deliberate
 curtailment), and learns your system from Home Assistant's own history.
+
+**Highlights**
+
+* Physics (sun position, clear sky, plane of array, cell temperature) in code; only a per-site
+  correction factor is learned, so it is useful from day one and improves with history.
+* A gradient-boosting learner written from scratch in numpy, with a *censored* loss: hours when the
+  inverter was throttling count as lower bounds, not targets, so throttled systems learn their real
+  potential instead of learning "low".
+* Validated on public NREL PVDAQ systems with simulated throttling: learning curves, throttling bias
+  and live-estimate accuracy in [research/](research/README.md).
+* Parity-tested against pvlib and LightGBM; Home Assistant integration tests; CI with ruff, hassfest
+  and HACS validation.
 
 Status: **early development.** Works: learning from history, satellite real-time estimate, Energy
 dashboard forecast, throttling-aware learning for off-grid and export-limited systems, and the live
